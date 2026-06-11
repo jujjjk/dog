@@ -193,6 +193,29 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
         export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
 
+    if args_cli.task in {
+        "Isaac-Velocity-Flat-FanfanRlCpgResidual-v0",
+        "Isaac-Velocity-Flat-FanfanRlCpgResidual-Play-v0",
+    }:
+        residual_policy = runner.alg.policy if hasattr(runner.alg, "policy") else runner.alg.actor_critic
+        if hasattr(residual_policy, "actor_obs_normalizer"):
+            residual_normalizer = residual_policy.actor_obs_normalizer
+        elif hasattr(residual_policy, "student_obs_normalizer"):
+            residual_normalizer = residual_policy.student_obs_normalizer
+        else:
+            residual_normalizer = None
+        from isaaclab_tasks.manager_based.locomotion.velocity.config.fanfan_rl_cpg_residual.onnx_contract import (
+            export_residual_policy_as_onnx,
+        )
+
+        export_residual_policy_as_onnx(
+            residual_policy,
+            output_dir=export_model_dir,
+            normalizer=residual_normalizer,
+            filename="policy.onnx",
+        )
+        print("[INFO]: Re-exported policy.onnx as scaled residual_rad[12] with deployment contract.")
+
     dt = env.unwrapped.step_dt
 
     # reset environment

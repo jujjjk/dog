@@ -1,0 +1,37 @@
+motor:
+  name: RS01
+  peak_torque_nm: 17.0
+  continuous_torque_nm: 6.0
+  safe_training_torque_nm: 5.0
+  max_velocity_rad_s: 33.0
+  rated_velocity_rad_s: 10.47
+  rated_current_a: null
+  rated_phase_current_peak_a: 7.0
+  over_current_threshold_a: null
+  max_phase_current_peak_a: 23.0
+  temperature_limit_c: 103.0
+  winding_protection_temperature_c: 145.0
+  voltage_range_v:
+  - 24.0
+  - 50.0
+  rated_voltage_v: 36.0
+  reduction_ratio: 7.75
+control:
+  mode: position_pd
+  kp_range: null
+  kd_range: null
+  recommended_kp: 40.0
+  recommended_kd: 5.0
+safety:
+  torque_limit_for_training_nm: 5.0
+  torque_limit_for_deploy_nm: 6.0
+  current_limit_for_deploy_a: null
+  temperature_limit_c: 103.0
+notes:
+  source: RS01 manual text extraction plus current project deployment gains.
+  warnings:
+  - rated_current_a is not filled because the manual text provides phase peak current,
+    not a directly interchangeable DC bus current.
+  - safe_training_torque_nm is conservative and below the 6 Nm continuous rating.
+  - Kp/Kd recommendations come from the current project configuration, not the RS01
+    manual.

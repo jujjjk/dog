@@ -1,0 +1,275 @@
+source:
+  urdf: FANFAN_URDF_PATH or fanfan/urdf/fanfan.urdf
+  robot_cfg: fanfan_rl_cpg/fanfan_robot_cfg.py
+  motor_profile: fanfan_rl_cpg/config/motor_profile.yaml
+  motor_profile_fitted: fanfan_rl_cpg/config/motor_profile_fitted.yaml
+model_summary:
+  base_mass_kg: 2.0
+  trunk_size_m:
+  - 0.26
+  - 0.16
+  - 0.1
+  nominal_leg_length_m: 0.30500091805062796
+  nominal_body_height_m: 0.293
+  effective_torque_limit_nm: 5.0
+mass_randomization:
+  base_mass_scale:
+  - 0.92
+  - 1.08
+  thigh_mass_scale:
+  - 0.95
+  - 1.05
+  calf_mass_scale:
+  - 0.95
+  - 1.05
+  foot_mass_scale:
+  - 0.95
+  - 1.05
+inertia_randomization:
+  enable: true
+  base_inertia_scale:
+  - 0.92
+  - 1.08
+  leg_inertia_scale:
+  - 0.95
+  - 1.05
+com_randomization:
+  base_com_x_m:
+  - -0.0078
+  - 0.0078
+  base_com_y_m:
+  - -0.005
+  - 0.005
+  base_com_z_m:
+  - -0.00586
+  - 0.00586
+joint_zero_offset_randomization:
+  FR_hip_joint:
+  - -0.03
+  - 0.03
+  FR_thigh_joint:
+  - -0.03
+  - 0.03
+  FR_calf_joint:
+  - -0.03
+  - 0.03
+  FL_hip_joint:
+  - -0.03
+  - 0.03
+  FL_thigh_joint:
+  - -0.03
+  - 0.03
+  FL_calf_joint:
+  - -0.03
+  - 0.03
+  RR_hip_joint:
+  - -0.03
+  - 0.03
+  RR_thigh_joint:
+  - -0.03
+  - 0.03
+  RR_calf_joint:
+  - -0.03
+  - 0.03
+  RL_hip_joint:
+  - -0.03
+  - 0.03
+  RL_thigh_joint:
+  - -0.03
+  - 0.03
+  RL_calf_joint:
+  - -0.03
+  - 0.03
+reset_joint_position_noise:
+  FR_hip_joint:
+  - -0.05
+  - 0.05
+  FR_thigh_joint:
+  - -0.05
+  - 0.05
+  FR_calf_joint:
+  - -0.05
+  - 0.05
+  FL_hip_joint:
+  - -0.05
+  - 0.05
+  FL_thigh_joint:
+  - -0.05
+  - 0.05
+  FL_calf_joint:
+  - -0.05
+  - 0.05
+  RR_hip_joint:
+  - -0.05
+  - 0.05
+  RR_thigh_joint:
+  - -0.05
+  - 0.05
+  RR_calf_joint:
+  - -0.05
+  - 0.05
+  RL_hip_joint:
+  - -0.05
+  - 0.05
+  RL_thigh_joint:
+  - -0.05
+  - 0.05
+  RL_calf_joint:
+  - -0.05
+  - 0.05
+joint_dynamics_randomization:
+  damping_scale:
+  - 0.8
+  - 1.2
+  friction_scale:
+  - 0.8
+  - 1.2
+  additive_friction_nm:
+    hip:
+    - 0.0
+    - 0.03
+    thigh:
+    - 0.0
+    - 0.05
+    calf:
+    - 0.0
+    - 0.05
+motor_strength_randomization:
+  global_scale:
+  - 0.65
+  - 1.0
+  per_leg_scale:
+  - 0.75
+  - 1.0
+  per_joint_scale:
+    hip:
+    - 0.75
+    - 1.0
+    thigh:
+    - 0.65
+    - 1.0
+    calf:
+    - 0.65
+    - 1.0
+torque_limit_randomization:
+  scale:
+  - 0.7
+  - 1.0
+  absolute_train_limit_nm: 5.0
+pd_gain_randomization:
+  kp_scale:
+  - 0.85
+  - 1.15
+  kd_scale:
+  - 0.85
+  - 1.15
+action_delay_randomization:
+  frames:
+  - 0
+  - 3
+  estimated_ms:
+  - 0.0
+  - 60.0
+terrain_randomization:
+  height_noise_m:
+  - 0.0
+  - 0.0061
+ground_slope_randomization:
+  roll_deg:
+  - -3
+  - 3
+  pitch_deg:
+  - -3
+  - 3
+contact_randomization:
+  ground_friction:
+  - 0.6
+  - 1.2
+  restitution:
+  - 0.0
+  - 0.1
+reset_base_randomization:
+  height_m:
+  - -0.015
+  - 0.015
+  roll_deg:
+  - -3
+  - 3
+  pitch_deg:
+  - -3
+  - 3
+  yaw_deg:
+  - -5
+  - 5
+push_randomization:
+  enable: true
+  force_n:
+  - 0.589
+  - 1.57
+  force_scale_body_weight:
+  - 0.03
+  - 0.08
+  interval_s:
+  - 3.0
+  - 6.0
+cpg_limits:
+  freq_min_hz: 0.8
+  freq_max_hz: 1.8
+  step_height_m: 0.03
+  step_length_min_m: 0.015
+  step_length_max_m: 0.06
+cpg_parameter_randomization:
+  step_height_scale:
+  - 0.85
+  - 1.15
+  step_length_scale:
+  - 0.85
+  - 1.15
+  frequency_scale:
+  - 0.9
+  - 1.1
+  duty_factor:
+  - 0.56
+  - 0.66
+  initial_phase_random: true
+curriculum:
+  stage_1_cpg_only:
+    randomization_level: none_or_minimal
+  stage_2_cpg_residual_basic:
+    enable:
+    - command_randomization
+    - initial_phase_randomization
+    - small_reset_noise
+  stage_3_motor_random:
+    enable:
+    - motor_strength_randomization
+    - action_delay_randomization
+    - pd_gain_randomization
+    - joint_zero_offset_randomization
+  stage_4_model_random:
+    enable:
+    - mass_randomization
+    - inertia_randomization
+    - com_randomization
+    - joint_friction_damping_randomization
+  stage_5_environment_random:
+    enable:
+    - ground_friction_randomization
+    - small_terrain_noise
+    - small_push
+    - small_slope
+  stage_6_eval_unseen:
+    enable:
+    - unseen_motor_strength
+    - unseen_delay
+    - unseen_friction
+    - unseen_zero_offset
+default_enabled_first_version:
+- command_randomization
+- cpg_initial_phase_randomization
+- small_reset_pose_noise
+- action_delay_randomization
+- motor_strength_randomization
+- kp_kd_randomization
+- joint_zero_offset_randomization
+warnings: []
