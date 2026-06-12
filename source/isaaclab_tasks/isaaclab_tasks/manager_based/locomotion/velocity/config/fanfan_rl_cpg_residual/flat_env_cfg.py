@@ -18,15 +18,11 @@ from isaaclab_tasks.manager_based.locomotion.velocity.config.fanfan_a1_clean.fla
 from . import mdp_observations as wave_obs
 from . import mdp_rewards as wave_rew
 from .curriculum import WAVE_CURRICULUM_STAGES, stage_gated_push, wave_curriculum
+from .joint_semantics import SIM_JOINT_NAMES
 from .residual_action import WaveResidualJointPositionActionCfg
 
 
-JOINT_NAMES = [
-    "FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
-    "FL_hip_joint", "FL_thigh_joint", "FL_calf_joint",
-    "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint",
-    "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint",
-]
+JOINT_NAMES = list(SIM_JOINT_NAMES)
 FOOT_CFG = SceneEntityCfg(
     "contact_forces",
     body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"],
@@ -105,13 +101,13 @@ class FanfanRlCpgResidualFlatEnvCfg(FanfanA1CleanFlatEnvCfg):
                 "RR_thigh_joint": (-0.10, 0.60), "RL_thigh_joint": (-0.10, 0.60),
                 ".*_calf_joint": (-2.4435, 0.0),
             },
-            sim_target_rate_limit_range=(1.5, 1.5),
-            sim_target_accel_limit_range=(60.0, 100.0),
-            sim_torque_budget_range=(5.0, 7.0),
-            sim_short_peak_torque_range=(8.0, 10.0),
+            sim_target_rate_limit_range=(1.9, 2.1),
+            sim_target_accel_limit_range=(80.0, 140.0),
+            sim_torque_budget_range=(7.0, 10.0),
+            sim_short_peak_torque_range=(10.0, 14.0),
             sim_short_peak_prob=0.05,
             sim_motor_delay_steps_range=(0, 2),
-            sim_motor_strength_scale_range=(0.90, 1.05),
+            sim_motor_strength_scale_range=(0.95, 1.05),
             sim_kp=40.0,
             sim_kp_scale_range=(0.90, 1.10),
             sim_kd_scale_range=(0.90, 1.10),
@@ -199,7 +195,8 @@ class FanfanRlCpgResidualFlatEnvCfg_PLAY(FanfanRlCpgResidualFlatEnvCfg):
         self.events.rs01_joint_properties = None
         self.events.base_com = None
         self.commands.base_velocity.rel_standing_envs = 0.0
-        self.commands.base_velocity.ranges.lin_vel_x = (0.10, 0.10)
+        # 0.15 selects the full 0.038 m / 0.62 Hz gait used by the real-machine node.
+        self.commands.base_velocity.ranges.lin_vel_x = (0.15, 0.15)
 
 
 @configclass
@@ -209,13 +206,14 @@ class FanfanRlCpgResidualReferenceEnvCfg(FanfanRlCpgResidualFlatEnvCfg_PLAY):
         self.scene.num_envs = 1
         self.actions.joint_pos.action_mode = "reference_only"
         self.actions.joint_pos.sim_motor_delay_steps_range = (0, 0)
-        self.actions.joint_pos.sim_torque_budget_range = (7.0, 7.0)
-        self.actions.joint_pos.sim_short_peak_torque_range = (7.0, 7.0)
+        self.actions.joint_pos.sim_target_rate_limit_range = (2.1, 2.1)
+        self.actions.joint_pos.sim_torque_budget_range = (10.0, 10.0)
+        self.actions.joint_pos.sim_short_peak_torque_range = (10.0, 10.0)
         self.actions.joint_pos.sim_short_peak_prob = 0.0
         self.actions.joint_pos.sim_motor_strength_scale_range = (1.0, 1.0)
         self.actions.joint_pos.sim_kp_scale_range = (1.0, 1.0)
         self.actions.joint_pos.sim_kd_scale_range = (1.0, 1.0)
-        self.actions.joint_pos.sim_target_accel_limit_range = (100.0, 100.0)
-        self.commands.base_velocity.ranges.lin_vel_x = (0.10, 0.10)
+        self.actions.joint_pos.sim_target_accel_limit_range = (140.0, 140.0)
+        self.commands.base_velocity.ranges.lin_vel_x = (0.15, 0.15)
         self.events.reset_base.params["pose_range"]["roll"] = (0.0, 0.0)
         self.events.reset_base.params["pose_range"]["pitch"] = (0.0, 0.0)

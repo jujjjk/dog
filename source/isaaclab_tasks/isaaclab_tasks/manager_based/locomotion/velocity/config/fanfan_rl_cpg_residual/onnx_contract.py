@@ -6,6 +6,7 @@ from pathlib import Path
 
 import torch
 
+from .joint_semantics import FanfanJointSemanticAdapter, POLICY_JOINT_NAMES
 from .reference_gait import FanfanReferenceGaitCfg
 
 
@@ -71,18 +72,21 @@ def write_deployment_contract(output_dir: str | Path) -> Path:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     cfg = FanfanReferenceGaitCfg()
+    semantic_adapter = FanfanJointSemanticAdapter()
     contract = {
         "warning": "ONNX output is a residual. Never send it directly to motors.",
         "observation_dim": 81,
         "observation_order": OBSERVATION_ORDER,
         "onnx_output": "scaled_joint_residual_rad[12]",
+        "onnx_output_joint_order": list(POLICY_JOINT_NAMES),
         "residual_scale_rad": RESIDUAL_SCALE,
         "residual_lowpass_alpha": 0.30,
         "reference_gait": vars(cfg),
+        "joint_semantics": semantic_adapter.contract_metadata(),
         "safety": {
-            "target_rate_limit_rad_s": 1.5,
-            "training_torque_budget_nm": [5.0, 7.0],
-            "training_short_peak_nm": [8.0, 10.0],
+            "target_rate_limit_rad_s": [1.9, 2.1],
+            "training_torque_budget_nm": [7.0, 10.0],
+            "training_short_peak_nm": [10.0, 14.0],
             "motor_delay_steps": [0, 2],
         },
         "deployment_chain": [
@@ -91,6 +95,7 @@ def write_deployment_contract(output_dir: str | Path) -> Path:
             "residual low-pass",
             "q_ref + residual",
             "joint/rate/torque safety filter",
+            "deployment-only policy target -> real motor mapper",
             "motor target",
         ],
     }

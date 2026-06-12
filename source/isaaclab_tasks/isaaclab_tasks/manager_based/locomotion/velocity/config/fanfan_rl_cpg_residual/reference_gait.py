@@ -5,6 +5,8 @@ import math
 
 import torch
 
+from .joint_semantics import SIM_HIP_SIDE_SIGNS
+
 
 LEG_ORDER = ("FR", "FL", "RR", "RL")
 SWING_ORDER = ("RR", "FR", "RL", "FL")
@@ -104,6 +106,8 @@ class FanfanReferenceGait:
             self.default_joint_pos[:, 1::3],
             self.default_joint_pos[:, 2::3],
         )
+        self.last_predicted_foot_z = self.default_foot_z.clone()
+        self.last_predicted_foot_lift = torch.zeros_like(self.default_foot_z)
 
     @staticmethod
     def _smoothstep01(value: torch.Tensor) -> torch.Tensor:
@@ -179,6 +183,8 @@ class FanfanReferenceGait:
         self.last_active_swing_one_hot[env_ids] = 0.0
         self.last_warmup[env_ids] = 0.0
         self.last_body_shift[env_ids] = 0.0
+        self.last_predicted_foot_z[env_ids] = self.default_foot_z[env_ids]
+        self.last_predicted_foot_lift[env_ids] = 0.0
 
     def _command_parameters(self, commands: torch.Tensor) -> tuple[torch.Tensor, ...]:
         cmd_x = torch.clamp(commands[:, 0], min=0.0)
@@ -273,7 +279,8 @@ class FanfanReferenceGait:
         x_des = torch.where(swing_mask, x_swing, x_stance)
         z_des = torch.where(swing_mask, z_swing, z_stance)
 
-        hip_delta = -0.004 * swing_shape * torch.tensor((1.0, 1.0, -1.0, 1.0), device=q.device)
+        hip_side_signs = torch.tensor(SIM_HIP_SIDE_SIGNS, device=q.device, dtype=q.dtype)
+        hip_delta = 0.004 * swing_shape * hip_side_signs
         calf_push = -calf_extra.unsqueeze(0) * swing_shape
         calf_push += 0.006 * stance_shape * torch.any(swing_mask, dim=1, keepdim=True)
         thigh_bias = torch.zeros_like(x_des)
@@ -312,14 +319,14 @@ class FanfanReferenceGait:
             calf_push[:, diag_idx] += float(self.cfg.diag_support_calf_push_amp) * diag_gate
             thigh_bias[:, diag_idx] += float(self.cfg.diag_support_thigh_back_amp) * diag_gate
             hip_delta[:, diag_idx] += (
-                torch.tensor((1.0, 1.0, -1.0, 1.0), device=q.device)[diag_idx]
+                hip_side_signs[diag_idx]
                 * float(self.cfg.diag_support_hip_amp)
                 * diag_gate
             )
             z_des[:, same_idx] += float(self.cfg.same_rear_unload_z_m) * same_gate
             calf_push[:, same_idx] -= float(self.cfg.same_rear_calf_relief_amp) * same_gate
             hip_delta[:, same_idx] -= (
-                torch.tensor((1.0, 1.0, -1.0, 1.0), device=q.device)[same_idx]
+                hip_side_signs[same_idx]
                 * float(self.cfg.same_rear_unload_hip_amp)
                 * same_gate
             )
@@ -378,6 +385,8 @@ class FanfanReferenceGait:
         self.last_active_swing_one_hot = active_one_hot
         self.last_warmup = warmup
         self.last_body_shift = body_shift
+        self.last_predicted_foot_z = self._forward_sagittal(q[:, 1::3], q[:, 2::3])[1]
+        self.last_predicted_foot_lift = self.last_predicted_foot_z - self.default_foot_z
         return q
 
     def get_q_ref(self) -> torch.Tensor:
@@ -398,4 +407,7 @@ class FanfanReferenceGait:
             "swing_mask": self.last_swing_mask,
             "active_swing_one_hot": self.last_active_swing_one_hot,
             "body_shift": self.last_body_shift,
+            "policy_q_ref": self.last_q_ref,
+            "predicted_foot_z": self.last_predicted_foot_z,
+            "predicted_foot_lift": self.last_predicted_foot_lift,
         }

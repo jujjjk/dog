@@ -2,6 +2,10 @@
 
 This task uses the existing 7.24 kg Fanfan asset. The actor outputs a 12-DoF
 residual around `FanfanReferenceGait`; it never outputs absolute motor targets.
+Play and Reference-only use a `0.15 m/s` command so the reference generator
+runs the same full `0.038 m` stride and `0.62 Hz` cycle as the real-machine
+big-stride node. Smooth output comes from the five-second gait warmup,
+residual low-pass filter, and target acceleration/rate limits.
 
 ## Linux validation
 
