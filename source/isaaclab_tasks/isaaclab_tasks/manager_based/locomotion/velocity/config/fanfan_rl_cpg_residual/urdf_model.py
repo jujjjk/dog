@@ -7,6 +7,7 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 
 HEAVY_URDF_NAME = "fanfan_mass_scaled_only_trunk_plus_800g.urdf"
+LEGACY_URDF_NAME = "fanfan.urdf"
 HEAVY_USD_NAME = "fanfan_mass_scaled_only_trunk_plus_800g_no_merge.usd"
 EXPECTED_TOTAL_MASS_KG = 7.242158331537168
 EXPECTED_TRUNK_MASS_KG = 2.76230213761
@@ -116,12 +117,20 @@ def resolve_heavy_urdf_path() -> Path:
             return path
 
     current_file = Path(__file__).resolve()
+    searched_paths: list[Path] = []
     for parent in current_file.parents:
-        candidate = parent / "fanfan" / "urdf" / HEAVY_URDF_NAME
-        if candidate.is_file():
-            return candidate
+        urdf_dir = parent / "fanfan" / "urdf"
+        for filename in (HEAVY_URDF_NAME, LEGACY_URDF_NAME):
+            candidate = urdf_dir / filename
+            searched_paths.append(candidate)
+            if candidate.is_file():
+                return candidate
+
+    searched = "\n  ".join(str(path) for path in searched_paths)
     raise FileNotFoundError(
-        f"Could not locate {HEAVY_URDF_NAME}. Set FANFAN_HEAVY_URDF_PATH explicitly."
+        f"Could not locate {HEAVY_URDF_NAME} or a compatible {LEGACY_URDF_NAME}.\n"
+        f"Searched:\n  {searched}\n"
+        "Set FANFAN_HEAVY_URDF_PATH to the 7.242 kg URDF explicitly."
     )
 
 
