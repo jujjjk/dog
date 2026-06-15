@@ -6,9 +6,29 @@ from isaaclab.assets import Articulation
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
 
+import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
+
+from .curriculum_profiles import get_wave_stage_number
+
 
 def _action(env, action_name: str = "joint_pos"):
     return env.action_manager.get_term(action_name)
+
+
+def _stage_noise(env, value: torch.Tensor, noise_name: str) -> torch.Tensor:
+    stage = get_wave_stage_number(int(getattr(env, "_fanfan_wave_stage", 1)))
+    amplitude = float(stage["noise"][noise_name])
+    if amplitude <= 0.0:
+        return value
+    return value + torch.empty_like(value).uniform_(-amplitude, amplitude)
+
+
+def noisy_base_ang_vel(env) -> torch.Tensor:
+    return _stage_noise(env, mdp.base_ang_vel(env), "base_ang_vel")
+
+
+def noisy_projected_gravity(env) -> torch.Tensor:
+    return _stage_noise(env, mdp.projected_gravity(env), "projected_gravity")
 
 
 def reference_joint_pos(env, action_name: str = "joint_pos") -> torch.Tensor:
@@ -20,9 +40,17 @@ def ordered_joint_pos_rel(env, asset_cfg: SceneEntityCfg) -> torch.Tensor:
     return asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
 
 
+def noisy_ordered_joint_pos_rel(env, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+    return _stage_noise(env, ordered_joint_pos_rel(env, asset_cfg), "joint_pos")
+
+
 def ordered_joint_vel(env, asset_cfg: SceneEntityCfg) -> torch.Tensor:
     asset: Articulation = env.scene[asset_cfg.name]
     return asset.data.joint_vel[:, asset_cfg.joint_ids]
+
+
+def noisy_ordered_joint_vel(env, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+    return _stage_noise(env, ordered_joint_vel(env, asset_cfg), "joint_vel")
 
 
 def reference_joint_error(

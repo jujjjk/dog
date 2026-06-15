@@ -32,3 +32,25 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:FanfanRlCpgResidualPPORunnerCfg",
     },
 )
+
+_REFERENCE_DEBUG_TASKS = {
+    "ReferenceRaw": "FanfanRlCpgResidualReferenceRawEnvCfg",
+    "ReferenceRate": "FanfanRlCpgResidualReferenceRateEnvCfg",
+    "ReferenceTorqueMonitor": "FanfanRlCpgResidualReferenceTorqueMonitorEnvCfg",
+    "ReferenceTorqueClip": "FanfanRlCpgResidualReferenceTorqueClipEnvCfg",
+    "ReferenceDelay": "FanfanRlCpgResidualReferenceDelayEnvCfg",
+    "ReferenceFiltered": "FanfanRlCpgResidualReferenceFilteredEnvCfg",
+    "JointMapping": "FanfanRlCpgResidualJointMappingEnvCfg",
+    "JointMappingDebug": "FanfanRlCpgResidualJointMappingEnvCfg",
+    "CsvPlayback": "FanfanRlCpgResidualCsvPlaybackEnvCfg",
+}
+
+for suffix, cfg_name in _REFERENCE_DEBUG_TASKS.items():
+    gym.register(
+        id=f"Isaac-Velocity-Flat-FanfanRlCpgResidual-{suffix}-v0",
+        **_COMMON,
+        kwargs={
+            "env_cfg_entry_point": f"{__name__}.flat_env_cfg:{cfg_name}",
+            "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:FanfanRlCpgResidualPPORunnerCfg",
+        },
+    )

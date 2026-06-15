@@ -1,27 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
-
 from isaaclab.envs import mdp
 
-
-WAVE_CURRICULUM_STAGES = (
-    {"stage": 1, "start_iter": 0, "end_iter": 10_000, "lin_vel_x": (0.00, 0.05), "standing": 0.35,
-     "swing_contact": -0.10, "stance_loss": -0.05},
-    {"stage": 2, "start_iter": 10_000, "end_iter": 30_000, "lin_vel_x": (0.03, 0.10), "standing": 0.20,
-     "swing_contact": -0.10, "stance_loss": -0.05},
-    {"stage": 3, "start_iter": 30_000, "end_iter": 60_000, "lin_vel_x": (0.05, 0.15), "standing": 0.10,
-     "swing_contact": -0.30, "stance_loss": -0.15},
-    {"stage": 4, "start_iter": 60_000, "end_iter": None, "lin_vel_x": (0.05, 0.15), "standing": 0.05,
-     "swing_contact": -0.60, "stance_loss": -0.30},
-)
+from .curriculum_profiles import WAVE_CURRICULUM_STAGES, get_wave_stage, reference_scales
 
 
-def get_wave_stage(iteration: int, stages: Sequence[dict] = WAVE_CURRICULUM_STAGES) -> dict:
-    for stage in stages:
-        if iteration >= stage["start_iter"] and (stage["end_iter"] is None or iteration < stage["end_iter"]):
-            return stage
-    return stages[-1]
+def _set_event_params(env, term_name: str, **params) -> None:
+    cfg = env.event_manager.get_term_cfg(term_name)
+    cfg.params.update(params)
+    env.event_manager.set_term_cfg(term_name, cfg)
 
 
 def wave_curriculum(env, env_ids, command_name="base_velocity", num_steps_per_iter=24, stages=None):
@@ -36,8 +23,54 @@ def wave_curriculum(env, env_ids, command_name="base_velocity", num_steps_per_it
         cfg = env.reward_manager.get_term_cfg(name)
         cfg.weight = float(stage[key])
         env.reward_manager.set_term_cfg(name, cfg)
+
+    _set_event_params(env, "add_base_mass", mass_distribution_params=tuple(stage["mass_delta"]))
+    _set_event_params(
+        env,
+        "rs01_joint_properties",
+        friction_distribution_params=tuple(stage["joint_friction"]),
+        armature_distribution_params=tuple(stage["armature"]),
+    )
+    _set_event_params(
+        env,
+        "rs01_actuator_gains",
+        stiffness_distribution_params=tuple(stage["actuator_gain"]),
+        damping_distribution_params=tuple(stage["actuator_gain"]),
+    )
+    tilt = float(stage["reset_tilt"])
+    _set_event_params(
+        env,
+        "reset_base",
+        pose_range={
+            **env.event_manager.get_term_cfg("reset_base").params["pose_range"],
+            "roll": (-tilt, tilt),
+            "pitch": (-tilt, tilt),
+        },
+    )
     env._fanfan_wave_stage = int(stage["stage"])
-    return {"iteration": float(iteration), "stage": float(stage["stage"])}
+    stride_min, frequency_min, swing_min = reference_scales(stage["lin_vel_x"][0])
+    stride_max, frequency_max, swing_max = reference_scales(stage["lin_vel_x"][1])
+    return {
+        "iteration": float(iteration),
+        "stage": float(stage["stage"]),
+        "cmd_x_min": float(stage["lin_vel_x"][0]),
+        "cmd_x_max": float(stage["lin_vel_x"][1]),
+        "standing_ratio": float(stage["standing"]),
+        "reference_stride_scale_min": stride_min,
+        "reference_stride_scale_max": stride_max,
+        "reference_frequency_scale_min": frequency_min,
+        "reference_frequency_scale_max": frequency_max,
+        "reference_swing_scale_min": swing_min,
+        "reference_swing_scale_max": swing_max,
+        "mass_delta_max": max(abs(float(v)) for v in stage["mass_delta"]),
+        "friction_min": float(stage["joint_friction"][0]),
+        "friction_max": float(stage["joint_friction"][1]),
+        "motor_strength_min": float(stage["motor_strength"][0]),
+        "motor_strength_max": float(stage["motor_strength"][1]),
+        "delay_max": float(stage["delay_steps"][1]),
+        "noise_level": float(stage["noise_level"]),
+        "push_enabled": float(stage["push_enabled"]),
+    }
 
 
 def stage_gated_push(env, env_ids, velocity_range, minimum_stage: int = 4):

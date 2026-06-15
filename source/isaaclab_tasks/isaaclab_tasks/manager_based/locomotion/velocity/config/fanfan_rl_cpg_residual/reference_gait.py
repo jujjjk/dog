@@ -5,11 +5,9 @@ import math
 
 import torch
 
-from .joint_semantics import SIM_HIP_SIDE_SIGNS
-
-
 LEG_ORDER = ("FR", "FL", "RR", "RL")
 SWING_ORDER = ("RR", "FR", "RL", "FL")
+REFERENCE_HIP_OUTWARD_SIGNS = (1.0, 1.0, -1.0, 1.0)
 LEG_START = {"FR": 0, "FL": 3, "RR": 6, "RL": 9}
 FRONT_LEGS = ("FR", "FL")
 REAR_LEGS = ("RR", "RL")
@@ -27,6 +25,9 @@ class FanfanReferenceGaitCfg:
     command_full_speed: float = 0.15
     command_gate_start: float = 0.005
     command_gate_end: float = 0.030
+    command_overspeed_end: float = 0.18
+    max_stride_scale: float = 1.20
+    max_frequency_scale: float = 1.10
 
     thigh_length: float = 0.1560608
     calf_length: float = 0.1489418
@@ -97,6 +98,7 @@ class FanfanReferenceGait:
         self.last_frequency = torch.zeros(self.num_envs, device=self.device)
         self.last_stride = torch.zeros(self.num_envs, device=self.device)
         self.last_swing_height = torch.zeros(self.num_envs, device=self.device)
+        self.last_overspeed_scale = torch.zeros(self.num_envs, device=self.device)
         self.last_leg_phase = torch.zeros(self.num_envs, 4, device=self.device)
         self.last_swing_mask = torch.zeros(self.num_envs, 4, dtype=torch.bool, device=self.device)
         self.last_active_swing_one_hot = torch.zeros(self.num_envs, 4, device=self.device)
@@ -178,6 +180,7 @@ class FanfanReferenceGait:
         self.last_frequency[env_ids] = 0.0
         self.last_stride[env_ids] = 0.0
         self.last_swing_height[env_ids] = 0.0
+        self.last_overspeed_scale[env_ids] = 0.0
         self.last_leg_phase[env_ids] = 0.0
         self.last_swing_mask[env_ids] = False
         self.last_active_swing_one_hot[env_ids] = 0.0
@@ -193,9 +196,21 @@ class FanfanReferenceGait:
         )
         walk_gate = self._smoothstep01(gate_input)
         u = torch.clamp(cmd_x / float(self.cfg.command_full_speed), 0.0, 1.0)
-        stride = walk_gate * float(self.cfg.stride_length) * u
-        frequency = walk_gate * float(self.cfg.step_hz) * (0.35 + 0.65 * torch.sqrt(u))
+        overspeed_range = max(
+            float(self.cfg.command_overspeed_end - self.cfg.command_full_speed), 1.0e-6
+        )
+        overspeed_input = (cmd_x - float(self.cfg.command_full_speed)) / overspeed_range
+        overspeed = self._smoothstep01(overspeed_input)
+        stride = walk_gate * float(self.cfg.stride_length) * (
+            u + (float(self.cfg.max_stride_scale) - 1.0) * overspeed
+        )
+        frequency = walk_gate * float(self.cfg.step_hz) * (
+            0.35
+            + 0.65 * torch.sqrt(u)
+            + (float(self.cfg.max_frequency_scale) - 1.0) * overspeed
+        )
         swing_height = walk_gate * (0.030 + (float(self.cfg.swing_height) - 0.030) * u)
+        self.last_overspeed_scale = overspeed
         return walk_gate, u, stride, frequency, swing_height
 
     def update(self, commands: torch.Tensor) -> torch.Tensor:
@@ -279,8 +294,10 @@ class FanfanReferenceGait:
         x_des = torch.where(swing_mask, x_swing, x_stance)
         z_des = torch.where(swing_mask, z_swing, z_stance)
 
-        hip_side_signs = torch.tensor(SIM_HIP_SIDE_SIGNS, device=q.device, dtype=q.dtype)
-        hip_delta = 0.004 * swing_shape * hip_side_signs
+        hip_outward_signs = torch.tensor(REFERENCE_HIP_OUTWARD_SIGNS, device=q.device, dtype=q.dtype)
+        # Keep the real-machine gait semantics here. Any URDF sign difference
+        # belongs in FanfanJointSemanticAdapter, not in the gait equations.
+        hip_delta = -0.004 * swing_shape * hip_outward_signs
         calf_push = -calf_extra.unsqueeze(0) * swing_shape
         calf_push += 0.006 * stance_shape * torch.any(swing_mask, dim=1, keepdim=True)
         thigh_bias = torch.zeros_like(x_des)
@@ -319,14 +336,14 @@ class FanfanReferenceGait:
             calf_push[:, diag_idx] += float(self.cfg.diag_support_calf_push_amp) * diag_gate
             thigh_bias[:, diag_idx] += float(self.cfg.diag_support_thigh_back_amp) * diag_gate
             hip_delta[:, diag_idx] += (
-                hip_side_signs[diag_idx]
+                hip_outward_signs[diag_idx]
                 * float(self.cfg.diag_support_hip_amp)
                 * diag_gate
             )
             z_des[:, same_idx] += float(self.cfg.same_rear_unload_z_m) * same_gate
             calf_push[:, same_idx] -= float(self.cfg.same_rear_calf_relief_amp) * same_gate
             hip_delta[:, same_idx] -= (
-                hip_side_signs[same_idx]
+                hip_outward_signs[same_idx]
                 * float(self.cfg.same_rear_unload_hip_amp)
                 * same_gate
             )
@@ -402,6 +419,10 @@ class FanfanReferenceGait:
             "frequency": self.last_frequency,
             "stride": self.last_stride,
             "swing_height": self.last_swing_height,
+            "duty_factor": torch.full(
+                (self.num_envs,), float(self.cfg.duty_factor), device=self.device
+            ),
+            "overspeed_scale": self.last_overspeed_scale,
             "warmup": self.last_warmup,
             "leg_phase": self.last_leg_phase,
             "swing_mask": self.last_swing_mask,

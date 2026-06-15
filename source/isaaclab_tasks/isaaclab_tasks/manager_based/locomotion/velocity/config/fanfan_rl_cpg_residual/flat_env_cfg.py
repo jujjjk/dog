@@ -9,7 +9,6 @@ from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 from isaaclab_tasks.manager_based.locomotion.velocity.config.fanfan_a1_clean.flat_env_cfg import (
     FanfanA1CleanFlatEnvCfg,
@@ -33,18 +32,16 @@ JOINT_CFG = SceneEntityCfg("robot", joint_names=JOINT_NAMES, preserve_order=True
 
 @configclass
 class WavePolicyCfg(ObsGroup):
-    base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.05, n_max=0.05))
-    projected_gravity = ObsTerm(func=mdp.projected_gravity, noise=Unoise(n_min=-0.02, n_max=0.02))
+    base_ang_vel = ObsTerm(func=wave_obs.noisy_base_ang_vel)
+    projected_gravity = ObsTerm(func=wave_obs.noisy_projected_gravity)
     velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
     joint_pos = ObsTerm(
-        func=wave_obs.ordered_joint_pos_rel,
+        func=wave_obs.noisy_ordered_joint_pos_rel,
         params={"asset_cfg": JOINT_CFG},
-        noise=Unoise(n_min=-0.005, n_max=0.005),
     )
     joint_vel = ObsTerm(
-        func=wave_obs.ordered_joint_vel,
+        func=wave_obs.noisy_ordered_joint_vel,
         params={"asset_cfg": JOINT_CFG},
-        noise=Unoise(n_min=-0.15, n_max=0.15),
     )
     actions = ObsTerm(func=wave_obs.last_residual_action)
     q_ref = ObsTerm(func=wave_obs.reference_joint_pos)
@@ -106,7 +103,7 @@ class FanfanRlCpgResidualFlatEnvCfg(FanfanA1CleanFlatEnvCfg):
             sim_torque_budget_range=(7.0, 10.0),
             sim_short_peak_torque_range=(10.0, 14.0),
             sim_short_peak_prob=0.05,
-            sim_motor_delay_steps_range=(0, 2),
+            sim_motor_delay_steps_range=(0, 3),
             sim_motor_strength_scale_range=(0.95, 1.05),
             sim_kp=40.0,
             sim_kp_scale_range=(0.90, 1.10),
@@ -155,8 +152,8 @@ class FanfanRlCpgResidualFlatEnvCfg(FanfanA1CleanFlatEnvCfg):
 
         self.commands.base_velocity.heading_command = False
         self.commands.base_velocity.rel_heading_envs = 0.0
-        self.commands.base_velocity.rel_standing_envs = 0.35
-        self.commands.base_velocity.ranges.lin_vel_x = (0.0, 0.05)
+        self.commands.base_velocity.rel_standing_envs = 0.18
+        self.commands.base_velocity.ranges.lin_vel_x = (0.10, 0.15)
         self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
         self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
         self.curriculum.auto_speed = CurrTerm(
@@ -165,12 +162,21 @@ class FanfanRlCpgResidualFlatEnvCfg(FanfanA1CleanFlatEnvCfg):
         )
 
         self.events.add_base_mass = EventTerm(
-            func=base_mdp.randomize_rigid_body_mass, mode="startup",
+            func=base_mdp.randomize_rigid_body_mass, mode="reset",
             params={
                 "asset_cfg": SceneEntityCfg("robot", body_names="Trunk"),
-                "mass_distribution_params": (-0.20, 0.20), "operation": "add",
+                "mass_distribution_params": (0.0, 0.0), "operation": "add",
             },
         )
+        self.events.rs01_actuator_gains.mode = "reset"
+        self.events.rs01_actuator_gains.params["stiffness_distribution_params"] = (1.0, 1.0)
+        self.events.rs01_actuator_gains.params["damping_distribution_params"] = (1.0, 1.0)
+        self.events.rs01_joint_properties.mode = "reset"
+        self.events.rs01_joint_properties.params["friction_distribution_params"] = (0.08, 0.08)
+        self.events.rs01_joint_properties.params["armature_distribution_params"] = (0.010, 0.010)
+        # The staged profiles do not include COM randomization; leaving the
+        # inherited startup event enabled would contaminate deterministic Stage 1.
+        self.events.base_com = None
         self.events.push_robot = EventTerm(
             func=stage_gated_push, mode="interval", interval_range_s=(12.0, 18.0),
             params={
@@ -178,7 +184,7 @@ class FanfanRlCpgResidualFlatEnvCfg(FanfanA1CleanFlatEnvCfg):
                 "minimum_stage": 4,
             },
         )
-        self.events.reset_base.params["pose_range"].update({"roll": (-0.05, 0.05), "pitch": (-0.05, 0.05)})
+        self.events.reset_base.params["pose_range"].update({"roll": (-0.01, 0.01), "pitch": (-0.01, 0.01)})
 
 
 @configclass
@@ -204,8 +210,14 @@ class FanfanRlCpgResidualReferenceEnvCfg(FanfanRlCpgResidualFlatEnvCfg_PLAY):
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 1
-        self.actions.joint_pos.action_mode = "reference_only"
-        self.actions.joint_pos.sim_motor_delay_steps_range = (0, 0)
+        self.episode_length_s = 120.0
+        self.actions.joint_pos.action_mode = "reference_rate_limit"
+        self.actions.joint_pos.enable_target_rate_limit = True
+        self.actions.joint_pos.enable_torque_target_limit = False
+        self.actions.joint_pos.enable_target_accel_limit = False
+        self.actions.joint_pos.enable_action_delay = False
+        self.actions.joint_pos.fixed_delay_steps = 0
+        self.actions.joint_pos.sim_motor_delay_steps_range = (0, 2)
         self.actions.joint_pos.sim_target_rate_limit_range = (2.1, 2.1)
         self.actions.joint_pos.sim_torque_budget_range = (10.0, 10.0)
         self.actions.joint_pos.sim_short_peak_torque_range = (10.0, 10.0)
@@ -214,6 +226,100 @@ class FanfanRlCpgResidualReferenceEnvCfg(FanfanRlCpgResidualFlatEnvCfg_PLAY):
         self.actions.joint_pos.sim_kp_scale_range = (1.0, 1.0)
         self.actions.joint_pos.sim_kd_scale_range = (1.0, 1.0)
         self.actions.joint_pos.sim_target_accel_limit_range = (140.0, 140.0)
+        self.actions.joint_pos.hip_err_limit_mul = 1.0
+        self.actions.joint_pos.thigh_err_limit_mul = 1.0
+        self.actions.joint_pos.calf_err_limit_mul = 1.0
+        self.actions.joint_pos.hip_target_rate_mul = 1.0
+        self.actions.joint_pos.thigh_target_rate_mul = 1.0
+        self.actions.joint_pos.calf_target_rate_mul = 1.0
+        self.actions.joint_pos.hip_target_accel_mul = 1.0
+        self.actions.joint_pos.thigh_target_accel_mul = 1.0
+        self.actions.joint_pos.calf_target_accel_mul = 1.0
         self.commands.base_velocity.ranges.lin_vel_x = (0.15, 0.15)
-        self.events.reset_base.params["pose_range"]["roll"] = (0.0, 0.0)
-        self.events.reset_base.params["pose_range"]["pitch"] = (0.0, 0.0)
+        self.events.reset_base.params["pose_range"] = {
+            "x": (0.0, 0.0),
+            "y": (0.0, 0.0),
+            "z": (0.0, 0.0),
+            "roll": (0.0, 0.0),
+            "pitch": (0.0, 0.0),
+            "yaw": (0.0, 0.0),
+        }
+
+
+@configclass
+class FanfanRlCpgResidualReferenceRawEnvCfg(FanfanRlCpgResidualReferenceEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.actions.joint_pos.action_mode = "reference_raw"
+        self.actions.joint_pos.enable_deploy_target_filter = False
+        self.actions.joint_pos.enable_target_rate_limit = False
+        self.actions.joint_pos.enable_target_accel_limit = False
+        self.actions.joint_pos.enable_torque_target_limit = False
+        self.actions.joint_pos.enable_action_delay = False
+        self.actions.joint_pos.fixed_delay_steps = 0
+        self.actions.joint_pos.reference_cfg.warmup_sec = 1.0
+        self.actions.joint_pos.reference_cfg.step_hz = 0.62
+        self.actions.joint_pos.reference_cfg.stride_length = 0.038
+        self.actions.joint_pos.reference_cfg.swing_height = 0.072
+        self.actions.joint_pos.reference_cfg.duty_factor = 0.78
+        self.actions.joint_pos.clip = None
+        self.terminations.time_out = None
+        self.terminations.base_contact = None
+        self.terminations.low_base = None
+        self.terminations.bad_orientation = None
+        reward_names = set(getattr(self.rewards, "__dataclass_fields__", {}))
+        reward_names.update(name for name in vars(self.rewards) if not name.startswith("_"))
+        for reward_name in reward_names:
+            setattr(self.rewards, reward_name, None)
+
+
+@configclass
+class FanfanRlCpgResidualReferenceRateEnvCfg(FanfanRlCpgResidualReferenceEnvCfg):
+    pass
+
+
+@configclass
+class FanfanRlCpgResidualReferenceTorqueMonitorEnvCfg(FanfanRlCpgResidualReferenceEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.actions.joint_pos.action_mode = "reference_torque_monitor"
+
+
+@configclass
+class FanfanRlCpgResidualReferenceTorqueClipEnvCfg(FanfanRlCpgResidualReferenceEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.actions.joint_pos.action_mode = "reference_torque_clip"
+        self.actions.joint_pos.enable_torque_target_limit = True
+
+
+@configclass
+class FanfanRlCpgResidualReferenceDelayEnvCfg(FanfanRlCpgResidualReferenceTorqueClipEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.actions.joint_pos.action_mode = "reference_delay"
+        self.actions.joint_pos.enable_action_delay = True
+
+
+@configclass
+class FanfanRlCpgResidualReferenceFilteredEnvCfg(FanfanRlCpgResidualReferenceDelayEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.actions.joint_pos.action_mode = "reference_filtered"
+        self.actions.joint_pos.enable_target_accel_limit = True
+
+
+@configclass
+class FanfanRlCpgResidualJointMappingEnvCfg(FanfanRlCpgResidualReferenceRawEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.actions.joint_pos.action_mode = "joint_mapping_debug"
+        self.commands.base_velocity.ranges.lin_vel_x = (0.0, 0.0)
+
+
+@configclass
+class FanfanRlCpgResidualCsvPlaybackEnvCfg(FanfanRlCpgResidualReferenceRawEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.actions.joint_pos.action_mode = "csv_playback"
+        self.commands.base_velocity.ranges.lin_vel_x = (0.0, 0.0)
