@@ -7,6 +7,7 @@ from typing import Protocol
 import torch
 
 from isaaclab.utils import configclass
+from isaaclab.utils.math import quat_rotate_inverse
 
 from isaaclab_tasks.manager_based.locomotion.velocity.config.fanfan_a1_clean.deploy_actions import (
     DeployFilteredJointPositionAction,
@@ -72,6 +73,12 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
         )
         if tuple(resolved_foot_names) != ("FR_foot", "FL_foot", "RR_foot", "RL_foot"):
             raise ValueError(f"Unexpected Fanfan foot body order: {resolved_foot_names}")
+        self._trunk_body_ids, resolved_trunk_names = self._asset.find_bodies(
+            ["Trunk"], preserve_order=True
+        )
+        if tuple(resolved_trunk_names) != ("Trunk",):
+            raise ValueError(f"Unexpected Fanfan trunk body: {resolved_trunk_names}")
+        self._rear_lift_step = 0
         self._validate_control_stage()
         self._residual_scale = self._make_residual_scale()
         self._filtered_residual = torch.zeros_like(self.processed_actions)
@@ -324,6 +331,76 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
             device=self.device,
         )
 
+    def _rear_lift_test_target(self) -> torch.Tensor:
+        leg = str(self.cfg.rear_lift_test_leg).upper()
+        if leg not in ("RR", "RL"):
+            raise ValueError(f"rear_lift_test_leg must be RR or RL, got {leg!r}.")
+        leg_index = 2 if leg == "RR" else 3
+        q_policy = self.reference.default_joint_pos.clone()
+        q_policy[:, leg_index * 3 + 1] = float(self.cfg.rear_lift_test_thigh)
+        q_policy[:, leg_index * 3 + 2] = float(self.cfg.rear_lift_test_calf)
+
+        elapsed = self._rear_lift_step * float(self._env.step_dt)
+        settle = max(0.0, float(self.cfg.rear_lift_test_settle_sec))
+        cycle = max(0.5, float(self.cfg.rear_lift_test_cycle_sec))
+        if elapsed >= settle:
+            phase = ((elapsed - settle) % cycle) / cycle
+            if phase < 0.5:
+                lift_progress = self.reference._smootherstep01(
+                    torch.full(
+                        (self.num_envs,),
+                        phase * 2.0,
+                        device=self.device,
+                        dtype=q_policy.dtype,
+                    )
+                )
+            else:
+                lift_progress = 1.0 - self.reference._smootherstep01(
+                    torch.full(
+                        (self.num_envs,),
+                        (phase - 0.5) * 2.0,
+                        device=self.device,
+                        dtype=q_policy.dtype,
+                    )
+                )
+        else:
+            lift_progress = torch.zeros(self.num_envs, device=self.device, dtype=q_policy.dtype)
+
+        thigh_default = q_policy[:, leg_index * 3 + 1]
+        calf_default = q_policy[:, leg_index * 3 + 2]
+        x_default, z_default = self.reference._forward_sagittal(
+            thigh_default.unsqueeze(1), calf_default.unsqueeze(1)
+        )
+        z_target = z_default + float(self.cfg.rear_lift_test_height_m) * lift_progress.unsqueeze(1)
+        thigh_target, calf_target = self.reference._inverse_sagittal(x_default, z_target)
+        q_policy[:, leg_index * 3 + 1] = thigh_target[:, 0]
+        q_policy[:, leg_index * 3 + 2] = calf_target[:, 0]
+
+        self.reference.last_q_ref[:] = q_policy
+        self.reference.last_leg_phase.zero_()
+        self.reference.last_leg_phase[:, leg_index] = torch.remainder(
+            torch.tensor(elapsed / cycle, device=self.device, dtype=q_policy.dtype), 1.0
+        )
+        self.reference.last_swing_mask.zero_()
+        self.reference.last_swing_mask[:, leg_index] = lift_progress > 1.0e-5
+        self.reference.last_active_swing_one_hot.zero_()
+        self.reference.last_active_swing_one_hot[:, leg_index] = (
+            lift_progress > 1.0e-5
+        ).to(q_policy.dtype)
+        self.reference.last_support_gate[:] = (
+            ~self.reference.last_swing_mask
+        ).to(q_policy.dtype)
+        self.reference.last_preload_gate.zero_()
+        self.reference.last_post_touchdown_gate.zero_()
+        self.reference.last_predicted_foot_z = self.reference._forward_sagittal(
+            q_policy[:, 1::3], q_policy[:, 2::3]
+        )[1]
+        self.reference.last_predicted_foot_lift = (
+            self.reference.last_predicted_foot_z - self.reference.default_foot_z
+        )
+        self._rear_lift_step += 1
+        return q_policy
+
     def process_actions(self, actions: torch.Tensor):
         self._raw_actions[:] = actions
         if self.cfg.action_mode == "reference_raw":
@@ -352,10 +429,13 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
             self._joint_mapping_step += 1
             self._set_direct_playback_output(q_ref_policy)
             return
+        if self.cfg.action_mode == "rear_lift_test":
+            q_cpg_policy = self._rear_lift_test_target()
+            q_vmc_delta = torch.zeros_like(q_cpg_policy)
         else:
             q_cpg_policy = self.reference.update(self._commands())
             q_vmc_delta = self._compute_vmc_delta(q_cpg_policy)
-            q_ref_policy = q_cpg_policy + q_vmc_delta
+        q_ref_policy = q_cpg_policy + q_vmc_delta
 
         if self.cfg.action_mode != "reference_residual":
             delta = torch.zeros_like(actions)
@@ -372,7 +452,7 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
         q_ref_sim = self.semantic_adapter.policy_to_sim(q_ref_policy)
         q_raw = self.semantic_adapter.policy_to_sim(q_raw_policy)
         q_before_joint_limit = q_raw.clone()
-        if self.cfg.action_mode == "reference_stage":
+        if self.cfg.action_mode in ("reference_stage", "rear_lift_test"):
             q_raw = self._clamp_to_hard_joint_limits(q_raw)
         elif self.cfg.clip is not None:
             q_raw = torch.clamp(q_raw, min=self._clip[:, :, 0], max=self._clip[:, :, 1])
@@ -532,12 +612,20 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
         if env_ids.numel() == self.num_envs:
             self._joint_mapping_step = 0
             self._joint_mapping_index = -1
+            self._rear_lift_step = 0
         previous_reward_residual = getattr(self, "_previous_residual_for_reward", None)
         if previous_reward_residual is not None:
             previous_reward_residual[env_ids] = 0.0
 
     def get_debug_info(self) -> dict[str, torch.Tensor]:
         debug = dict(self.reference.get_debug_info())
+        trunk_pos_w = self._asset.data.body_pos_w[:, self._trunk_body_ids, :]
+        trunk_quat_w = self._asset.data.body_quat_w[:, self._trunk_body_ids, :]
+        foot_from_trunk_w = self._asset.data.body_pos_w[:, self._foot_body_ids, :] - trunk_pos_w
+        foot_from_trunk_b = quat_rotate_inverse(
+            trunk_quat_w.expand(-1, foot_from_trunk_w.shape[1], -1).reshape(-1, 4),
+            foot_from_trunk_w.reshape(-1, 3),
+        ).reshape(self.num_envs, -1, 3)
         active_one_hot = self.reference.last_active_swing_one_hot
         active_leg = torch.where(
             torch.sum(active_one_hot, dim=1) > 0.0,
@@ -598,6 +686,9 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
                 ),
                 "predicted_foot_height": self.reference.last_predicted_foot_lift,
                 "actual_foot_height": self._asset.data.body_pos_w[:, self._foot_body_ids, 2],
+                "actual_foot_height_body": (
+                    foot_from_trunk_b[:, :, 2]
+                ),
             }
         )
         return debug
@@ -625,6 +716,12 @@ class WaveResidualJointPositionActionCfg(DeployFilteredJointPositionActionCfg):
     joint_mapping_hold_sec: float = 1.0
     joint_mapping_rest_sec: float = 1.0
     joint_mapping_initial_hold_sec: float = 2.0
+    rear_lift_test_leg: str = "RR"
+    rear_lift_test_thigh: float = 0.3491
+    rear_lift_test_calf: float = -0.7854
+    rear_lift_test_height_m: float = 0.030
+    rear_lift_test_settle_sec: float = 2.0
+    rear_lift_test_cycle_sec: float = 2.0
     joint_limit_warning_interval_sec: float = 1.0
     csv_playback_path: str = "logs/reference_debug/fanfan_gait_playback.csv"
     control_stage: int = 1

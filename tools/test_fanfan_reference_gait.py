@@ -48,8 +48,8 @@ def make_small_gait(num_envs=1, dt=0.02):
     default = torch.tensor([
         -0.1571, 0.3491, -0.7854,
         0.1571, 0.3491, -0.7854,
-        -0.1571, 0.2269, -0.3491,
-        0.1571, 0.2269, -0.3491,
+        -0.1571, 0.3491, -0.7854,
+        0.1571, 0.3491, -0.7854,
     ]).repeat(num_envs, 1)
     model = urdf_mod.load_fanfan_urdf_model()
     cfg = gait_mod.FanfanSmallHighFreqReferenceGaitCfg(
@@ -145,31 +145,33 @@ def test_heavy_urdf_structure_and_default_fk():
 def test_small_high_frequency_defaults_and_continuity():
     gait = make_small_gait(dt=0.02)
     cfg = gait.cfg
-    assert cfg.step_hz == 0.82
-    assert cfg.stride_length == 0.026
-    assert cfg.swing_height == 0.062
+    assert cfg.step_hz == 0.95
+    assert cfg.stride_length == 0.024
+    assert cfg.swing_height == 0.050
     assert cfg.duty_factor == 0.78
-    assert cfg.warmup_sec == 4.0
-    assert cfg.reference_rate_limit_rad_s == 10.0
+    assert cfg.front_swing_height_gain == 1.05
+    assert cfg.rear_swing_height_gain == 0.64
+    assert cfg.rear_lift_rise_fraction == 0.42
+    assert cfg.rear_lift_fall_start == 0.58
+    assert cfg.rear_stride_gain == 0.80
+    assert cfg.warmup_sec == 2.0
+    assert cfg.preload_fraction == 0.10
+    assert cfg.post_touchdown_hold == 0.04
+    assert cfg.reference_rate_limit_rad_s == 0.0
     assert cfg.apply_default_pose_offsets is False
     assert torch.allclose(gait.default_joint_pos[0], torch.tensor([
         -0.1571, 0.3491, -0.7854,
         0.1571, 0.3491, -0.7854,
-        -0.1571, 0.2269, -0.3491,
-        0.1571, 0.2269, -0.3491,
+        -0.1571, 0.3491, -0.7854,
+        0.1571, 0.3491, -0.7854,
     ]))
 
     command = torch.tensor([[0.15, 0.0, 0.0]])
     previous = gait.get_q_ref().clone()
-    max_rate = 0.0
-    clipped_rate_steps = 0
     seen = []
     previous_active = None
     for _ in range(round(12.0 / gait.dt)):
         q_ref = gait.update(command)
-        rate = float(torch.max(torch.abs(q_ref - previous)) / gait.dt)
-        max_rate = max(max_rate, rate)
-        clipped_rate_steps += int(rate > 2.1)
         previous = q_ref.clone()
         active = gait.last_active_swing_one_hot[0]
         assert int(active.sum()) <= 1
@@ -179,13 +181,7 @@ def test_small_high_frequency_defaults_and_continuity():
         previous_active = active_index
 
     assert seen[:5] == ["RR", "FR", "RL", "FL", "RR"]
-    # The requested 62-67 mm lift at 0.82 Hz is not kinematically compatible
-    # with the deployment layer's 2.1 rad/s limit from this near-extended stand.
-    # The reference generator therefore stays below the RS01 rated-speed
-    # budget, while Stage 1 records how much its stricter limiter reshapes it.
-    assert clipped_rate_steps > 0
-    assert max_rate <= cfg.reference_rate_limit_rad_s + 1.0e-4
-    assert abs(1.0 / cfg.step_hz - 1.219512) < 1.0e-5
+    assert abs(1.0 / cfg.step_hz - 1.052632) < 1.0e-5
 
     x, z = gait._forward_sagittal(gait.last_q_ref[:, 1::3], gait.last_q_ref[:, 2::3])
     reach = torch.sqrt(x * x + z * z)
@@ -194,13 +190,133 @@ def test_small_high_frequency_defaults_and_continuity():
 
 
 def test_small_high_frequency_parameter_ranges():
-    invalid = gait_mod.FanfanSmallHighFreqReferenceGaitCfg(step_hz=1.0)
+    invalid = gait_mod.FanfanSmallHighFreqReferenceGaitCfg(step_hz=1.2)
     try:
         invalid.validate_parameters()
     except ValueError:
         pass
     else:
         raise AssertionError("Unsafe small-high-frequency step rate was accepted.")
+
+
+def test_rear_stand_pose_candidates_and_lift_ik():
+    cfg = gait_mod.FanfanSmallHighFreqReferenceGaitCfg(warmup_sec=0.0)
+    candidates = ((0.30, -0.60), (0.36, -0.75), (0.42, -0.90))
+    expected_margins = (0.0136, 0.0212, 0.0303)
+    for (thigh, calf), expected_margin in zip(candidates, expected_margins, strict=True):
+        default = torch.tensor([
+            -0.1571, 0.3491, -0.7854,
+            0.1571, 0.3491, -0.7854,
+            -0.1571, thigh, calf,
+            0.1571, thigh, calf,
+        ]).unsqueeze(0)
+        gait = gait_mod.FanfanReferenceGait(cfg, 1, "cpu", 0.01, default)
+        x, z = gait._forward_sagittal(
+            torch.tensor([[thigh]]), torch.tensor([[calf]])
+        )
+        reach = torch.sqrt(x * x + z * z)
+        margin = cfg.thigh_length + cfg.calf_length - float(reach)
+        assert abs(margin - expected_margin) < 5.0e-4
+        target_lift = 0.030
+        target_thigh, target_calf = gait._inverse_sagittal(x, z + target_lift)
+        _, lifted_z = gait._forward_sagittal(target_thigh, target_calf)
+        assert abs(float(lifted_z - z) - target_lift) < 1.0e-5
+        assert float(target_calf) < calf
+
+
+def test_level_symmetric_small_gait_stand_pose():
+    cfg = gait_mod.FanfanSmallHighFreqReferenceGaitCfg(warmup_sec=0.0)
+    thigh = 0.3491
+    calf = -0.7854
+    default = torch.tensor([
+        -0.1571, thigh, calf,
+        0.1571, thigh, calf,
+        -0.1571, thigh, calf,
+        0.1571, thigh, calf,
+    ]).unsqueeze(0)
+    gait = gait_mod.FanfanReferenceGait(cfg, 1, "cpu", 0.01, default)
+    assert torch.max(gait.default_foot_x) - torch.min(gait.default_foot_x) < 1.0e-7
+    assert torch.max(gait.default_foot_z) - torch.min(gait.default_foot_z) < 1.0e-7
+    foot_radius = 0.018
+    initial_base_height = 0.300
+    initial_foot_center_height = initial_base_height + float(gait.default_foot_z[0, 0])
+    assert initial_foot_center_height >= foot_radius - 1.0e-4
+
+
+def test_small_high_frequency_preload_and_support_timing():
+    gait = make_small_gait(dt=0.002)
+    gait.cfg.warmup_sec = 0.0
+    command = torch.tensor([[0.15, 0.0, 0.0]])
+    saw_preload_before_each_leg = set()
+    saw_post_touchdown_each_leg = set()
+    for _ in range(round(6.0 / gait.dt)):
+        gait.update(command)
+        assert torch.all(
+            gait.last_support_gate
+            == (~gait.last_swing_mask).to(gait.last_support_gate.dtype)
+        )
+        for leg_index in range(4):
+            leg_phase = float(gait.last_leg_phase[0, leg_index])
+            post = float(gait.last_post_touchdown_gate[0, leg_index])
+            if leg_phase > 0.98:
+                assert not bool(gait.last_swing_mask[0, leg_index])
+                other_legs = [index for index in range(4) if index != leg_index]
+                assert float(gait.last_preload_gate[0, leg_index]) == 0.0
+                assert torch.all(gait.last_preload_gate[0, other_legs] > 0.8)
+                saw_preload_before_each_leg.add(leg_index)
+            if (
+                1.0 - gait.cfg.duty_factor
+                <= leg_phase
+                < 1.0 - gait.cfg.duty_factor + gait.cfg.post_touchdown_hold
+                and post > 0.0
+            ):
+                saw_post_touchdown_each_leg.add(leg_index)
+    assert saw_preload_before_each_leg == {0, 1, 2, 3}
+    assert saw_post_touchdown_each_leg == {0, 1, 2, 3}
+
+
+def test_front_swing_does_not_unload_same_side_rear():
+    gait = make_small_gait(dt=0.001)
+    gait.cfg.warmup_sec = 0.0
+    command = torch.tensor([[0.15, 0.0, 0.0]])
+    checked = set()
+    swing_fraction = 1.0 - gait.cfg.duty_factor
+    for _ in range(round(5.0 / gait.dt)):
+        gait.update(command)
+        active = gait.last_active_swing_one_hot[0]
+        if int(active.sum()) != 1:
+            continue
+        active_index = int(active.argmax())
+        if active_index not in (0, 1):
+            continue
+        phase = float(gait.last_leg_phase[0, active_index])
+        if not 0.45 * swing_fraction < phase < 0.55 * swing_fraction:
+            continue
+        same_rear = 2 if active_index == 0 else 3
+        assert float(gait.last_predicted_foot_lift[0, same_rear]) <= 5.0e-4
+        checked.add(active_index)
+    assert checked == {0, 1}
+
+
+def test_rear_swing_has_lift_plateau():
+    gait = make_small_gait(dt=0.002)
+    gait.cfg.warmup_sec = 0.0
+    command = torch.tensor([[0.15, 0.0, 0.0]])
+    plateau_samples = {2: 0, 3: 0}
+    expected_height = gait.cfg.swing_height * gait.cfg.rear_swing_height_gain
+    for _ in range(round(5.0 / gait.dt)):
+        gait.update(command)
+        for leg_index in (2, 3):
+            if not bool(gait.last_swing_mask[0, leg_index]):
+                continue
+            swing_fraction = 1.0 - gait.cfg.duty_factor
+            progress = float(gait.last_leg_phase[0, leg_index]) / swing_fraction
+            if 0.44 <= progress <= 0.56:
+                lift = float(gait.last_predicted_foot_lift[0, leg_index])
+                assert lift >= expected_height - 2.0e-4
+                plateau_samples[leg_index] += 1
+    assert plateau_samples[2] > 10
+    assert plateau_samples[3] > 10
 
 
 def test_csv_wide_policy_and_interpolation():
@@ -460,6 +576,11 @@ if __name__ == "__main__":
     test_heavy_urdf_structure_and_default_fk()
     test_small_high_frequency_defaults_and_continuity()
     test_small_high_frequency_parameter_ranges()
+    test_rear_stand_pose_candidates_and_lift_ik()
+    test_level_symmetric_small_gait_stand_pose()
+    test_small_high_frequency_preload_and_support_timing()
+    test_front_swing_does_not_unload_same_side_rear()
+    test_rear_swing_has_lift_plateau()
     test_csv_wide_policy_and_interpolation()
     test_csv_wide_real_and_ros_long_form()
     test_csv_rejects_non_monotonic_time()

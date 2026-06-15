@@ -31,6 +31,21 @@ FOOT_CFG = SceneEntityCfg(
 )
 JOINT_CFG = SceneEntityCfg("robot", joint_names=JOINT_NAMES, preserve_order=True)
 HEAVY_FANFAN_CFG, HEAVY_FANFAN_MODEL = make_heavy_fanfan_cfg()
+SMALL_HIGH_FREQ_REAR_THIGH = 0.3491
+SMALL_HIGH_FREQ_REAR_CALF = -0.7854
+SMALL_HIGH_FREQ_INITIAL_BASE_HEIGHT = 0.300
+
+
+def _set_rear_stand_pose(robot_cfg, thigh: float, calf: float) -> None:
+    robot_cfg.init_state.pos = (0.0, 0.0, SMALL_HIGH_FREQ_INITIAL_BASE_HEIGHT)
+    robot_cfg.init_state.joint_pos.update(
+        {
+            "RR_thigh_joint": float(thigh),
+            "RL_thigh_joint": float(thigh),
+            "RR_calf_joint": float(calf),
+            "RL_calf_joint": float(calf),
+        }
+    )
 
 
 @configclass
@@ -335,6 +350,11 @@ class FanfanRlCpgResidualSmallHighFreqEnvCfg(FanfanRlCpgResidualFlatEnvCfg):
 
     def __post_init__(self):
         super().__post_init__()
+        _set_rear_stand_pose(
+            self.scene.robot,
+            SMALL_HIGH_FREQ_REAR_THIGH,
+            SMALL_HIGH_FREQ_REAR_CALF,
+        )
         self.actions.joint_pos.reference_cfg = FanfanSmallHighFreqReferenceGaitCfg(
             thigh_length=HEAVY_FANFAN_MODEL.thigh_length_m,
             calf_length=HEAVY_FANFAN_MODEL.calf_length_m,
@@ -343,10 +363,15 @@ class FanfanRlCpgResidualSmallHighFreqEnvCfg(FanfanRlCpgResidualFlatEnvCfg):
 
 @configclass
 class FanfanRlCpgResidualSmallHighFreqReferenceEnvCfg(FanfanRlCpgResidualReferenceRawEnvCfg):
-    """Deterministic small high-frequency reference task with Stage-1 safety."""
+    """Deterministic small high-frequency reference task with Stage-1 debug limits."""
 
     def __post_init__(self):
         super().__post_init__()
+        _set_rear_stand_pose(
+            self.scene.robot,
+            SMALL_HIGH_FREQ_REAR_THIGH,
+            SMALL_HIGH_FREQ_REAR_CALF,
+        )
         self.actions.joint_pos.action_mode = "reference_stage"
         self.actions.joint_pos.reference_cfg = FanfanSmallHighFreqReferenceGaitCfg(
             thigh_length=HEAVY_FANFAN_MODEL.thigh_length_m,
@@ -361,10 +386,10 @@ class FanfanRlCpgResidualSmallHighFreqReferenceEnvCfg(FanfanRlCpgResidualReferen
         self.actions.joint_pos.enable_torque_target_limit = True
         self.actions.joint_pos.enable_action_delay = False
         self.actions.joint_pos.fixed_delay_steps = 0
-        self.actions.joint_pos.sim_target_rate_limit_range = (2.1, 2.1)
-        self.actions.joint_pos.sim_target_accel_limit_range = (100.0, 100.0)
-        self.actions.joint_pos.sim_torque_budget_range = (6.0, 6.0)
-        self.actions.joint_pos.sim_short_peak_torque_range = (6.0, 6.0)
+        self.actions.joint_pos.sim_target_rate_limit_range = (10.0, 10.0)
+        self.actions.joint_pos.sim_target_accel_limit_range = (240.0, 240.0)
+        self.actions.joint_pos.sim_torque_budget_range = (12.0, 12.0)
+        self.actions.joint_pos.sim_short_peak_torque_range = (12.0, 12.0)
         self.actions.joint_pos.sim_short_peak_prob = 0.0
         self.actions.joint_pos.sim_motor_strength_scale_range = (1.0, 1.0)
         self.actions.joint_pos.sim_kp_scale_range = (1.0, 1.0)
@@ -398,7 +423,44 @@ class FanfanRlCpgResidualSmallHighFreqStage0ReferenceEnvCfg(
 class FanfanRlCpgResidualSmallHighFreqStage1ReferenceEnvCfg(
     FanfanRlCpgResidualSmallHighFreqReferenceEnvCfg
 ):
+    """Compatibility alias for the Stage-1 debug profile."""
+
     pass
+
+
+@configclass
+class FanfanRlCpgResidualSmallHighFreqStage1DebugReferenceEnvCfg(
+    FanfanRlCpgResidualSmallHighFreqReferenceEnvCfg
+):
+    """Simulation-only profile for checking whether the gait can execute."""
+
+    pass
+
+
+@configclass
+class FanfanRlCpgResidualSmallHighFreqStage1SafeReferenceEnvCfg(
+    FanfanRlCpgResidualSmallHighFreqReferenceEnvCfg
+):
+    """Conservative 5 rad/s and 6 N.m profile for hardware proximity checks."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.actions.joint_pos.sim_target_rate_limit_range = (5.0, 5.0)
+        self.actions.joint_pos.sim_target_accel_limit_range = (180.0, 180.0)
+        self.actions.joint_pos.sim_torque_budget_range = (6.0, 6.0)
+        self.actions.joint_pos.sim_short_peak_torque_range = (6.0, 6.0)
+
+
+@configclass
+class FanfanRlCpgResidualRearLiftTestEnvCfg(
+    FanfanRlCpgResidualSmallHighFreqStage0ReferenceEnvCfg
+):
+    """Reference-only isolated RR/RL lift test with configurable rear stand pose."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.actions.joint_pos.action_mode = "rear_lift_test"
+        self.commands.base_velocity.ranges.lin_vel_x = (0.0, 0.0)
 
 
 @configclass

@@ -33,18 +33,10 @@ swing_order   = RR -> FR -> RL -> FL
 
 The gait remains one-leg-at-a-time. The front swing-height gain is `1.08`,
 rear gain is `1.00`, and the front/rear stride gains are `1.00/0.92`. Its IK
-keeps a `5 mm` radial workspace margin and caps generated reference changes at
-`10 rad/s`, below the RS01 rated-speed value of about `10.47 rad/s`. A 36 V supply gives more speed-response
-headroom than 24 V, but does not change the normal `6 N*m` reference budget,
-the URDF limits, or the `17 N*m` actuator hard cap.
-
-The URDF-based trajectory audit measures about `11.8 rad/s` without this
-reference slew cap. A full `62-67 mm` lift at `0.82 Hz` is therefore not
-compatible with a raw `2.1 rad/s` joint-target ceiling from the selected
-near-extended stand pose. Stage 1 deliberately keeps the requested
-`2.1 rad/s` deployment limiter and logs its clipping ratio; frequent clipping
-means swing height/frequency must be reduced or the deployment rate budget
-must be revalidated before hardware use.
+keeps a `5 mm` radial workspace margin. The current reference uses `0.95 Hz`,
+`24 mm` front stride, about `19 mm` rear stride, about `52.5 mm` front lift,
+and `32 mm` rear lift with a short smooth plateau. Stage 0 deliberately has no reference or deployment
+slew filter so the raw CPG/IK timing remains observable.
 
 ### Reference stages
 
@@ -55,7 +47,8 @@ rewards, curriculum and automatic fall reset.
 | Stage | Control path |
 | --- | --- |
 | 0 | CPG/IK -> policy-to-sim -> URDF joint clamp |
-| 1 | Stage 0 + `2.1 rad/s` rate + `100 rad/s^2` acceleration + `6 N*m` target-error limits |
+| 1 / Debug | Stage 0 + `10 rad/s` rate + `240 rad/s^2` acceleration + `12 N*m` target-error limits |
+| 1 / Safe | Stage 0 + `5 rad/s` rate + `180 rad/s^2` acceleration + `6 N*m` target-error limits |
 | 2 | CPG/IK + bounded light VMC -> Stage-1 safety chain |
 | 3 | Reserved full-VMC provider; deliberately refuses to run until calibrated |
 
@@ -72,7 +65,11 @@ Run and record each stage:
   --num_envs 1 --duration 60
 
 ./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
-  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-SmallHighFreq-Stage1-Reference-v0 \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-SmallHighFreq-Stage1-Debug-Reference-v0 \
+  --num_envs 1 --duration 60
+
+./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-SmallHighFreq-Stage1-Safe-Reference-v0 \
   --num_envs 1 --duration 60
 
 ./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
@@ -80,7 +77,8 @@ Run and record each stage:
   --num_envs 1 --duration 60
 ```
 
-`SmallHighFreq-Reference-v0` is a Stage-1 alias. CSV output defaults to a
+`SmallHighFreq-Reference-v0` and the legacy `Stage1-Reference-v0` name are
+Stage-1 Debug aliases. CSV output defaults to a
 task-specific file under `logs/reference_debug/`, so Stage 0/1/2 runs do not
 overwrite one another. It includes stage, gait parameters,
 swing/stance masks, `q_cpg`, `q_vmc_delta`, `q_ref`, every safety-chain target,
@@ -88,10 +86,54 @@ swing/stance masks, `q_cpg`, `q_vmc_delta`, `q_ref`, every safety-chain target,
 predicted foot lift, actual world foot height, and every clamp mask.
 
 Do not start residual learning until Stage 0 has correct leg order, continuous
-lift/touchdown and stable tripod support, Stage 1 tracks without persistent
-clipping or torque above the normal budget, and Stage 2 only makes small
-posture improvements. If Stage 0 is unstable, tune stride, swing height,
-duty factor, support preload and stand pose before touching VMC.
+lift/touchdown and stable tripod support. Use Stage-1 Debug to decide whether
+the simulated joints can execute the trajectory. Stage-1 Safe is only a
+hardware-proximity check: if it reports persistent clipping or less than 60%
+actual/predicted foot lift, the trajectory exceeds the `5 rad/s / 6 N*m`
+profile and the filtered near-static motion must not be interpreted as a
+valid gait. If Stage 0 is unstable, tune stride, swing height, duty factor,
+support preload and stand pose before touching VMC.
+
+### Rear-leg isolated lift test
+
+The small-high-frequency reference now uses the same sagittal stand angles
+for front and rear legs: `thigh=0.3491 rad`, `calf=-0.7854 rad`. The URDF
+front/rear links and joint axes are symmetric, so this places all four foot
+centers at the same FK height and removes the old straight-rear-leg bias.
+The small-reference initial Trunk height is `0.300 m`, which avoids starting
+with the `18 mm` foot collision spheres embedded in the ground.
+
+The earlier rear-only candidates remain useful for comparison:
+
+```text
+0.30 / -0.60
+0.36 / -0.75
+0.42 / -0.90
+```
+
+Run RR or RL alone with the other three legs fixed:
+
+```bash
+./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-SmallHighFreq-RearLiftTest-v0 \
+  --num_envs 1 --duration 20 \
+  --rear_leg RR --rear_thigh 0.3491 --rear_calf -0.7854 \
+  --rear_lift_height 0.030 \
+  --output logs/reference_debug/rear_lift_RR_level.csv
+
+./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-SmallHighFreq-RearLiftTest-v0 \
+  --num_envs 1 --duration 20 \
+  --rear_leg RL --rear_thigh 0.3491 --rear_calf -0.7854 \
+  --rear_lift_height 0.030 \
+  --output logs/reference_debug/rear_lift_RL_level.csv
+```
+
+Repeat with the other two paired candidates. This test has no policy, VMC,
+delay, rate filter, acceleration filter, or torque target clip. CSV records
+both world foot height and foot height transformed into the Trunk frame,
+along with rear thigh/calf reference, command, position, error, and estimated
+torque.
 
 The future training entry point is registered but is not run by reference
 validation:

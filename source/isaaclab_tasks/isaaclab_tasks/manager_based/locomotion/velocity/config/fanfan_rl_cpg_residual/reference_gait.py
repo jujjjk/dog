@@ -7,6 +7,12 @@ import torch
 
 LEG_ORDER = ("FR", "FL", "RR", "RL")
 SWING_ORDER = ("RR", "FR", "RL", "FL")
+SMALL_HIGH_FREQUENCY_SWING_START = {
+    "RR": 0.00,
+    "FR": 0.25,
+    "RL": 0.50,
+    "FL": 0.75,
+}
 LEGACY_REFERENCE_HIP_OUTWARD_SIGNS = (1.0, 1.0, -1.0, 1.0)
 URDF_HIP_OUTWARD_SIGNS = (-1.0, 1.0, -1.0, 1.0)
 LEG_START = {"FR": 0, "FL": 3, "RR": 6, "RL": 9}
@@ -77,26 +83,29 @@ class FanfanReferenceGaitCfg:
 
 @dataclass
 class FanfanSmallHighFreqReferenceGaitCfg(FanfanReferenceGaitCfg):
-    step_hz: float = 0.82
-    stride_length: float = 0.026
-    swing_height: float = 0.062
+    step_hz: float = 0.95
+    stride_length: float = 0.024
+    swing_height: float = 0.050
     duty_factor: float = 0.78
-    warmup_sec: float = 4.0
+    warmup_sec: float = 2.0
     small_high_frequency_mode: bool = True
-    reference_rate_limit_rad_s: float = 10.0
+    reference_rate_limit_rad_s: float = 0.0
     apply_default_pose_offsets: bool = False
     hip_outward_signs: tuple[float, float, float, float] = URDF_HIP_OUTWARD_SIGNS
 
     front_stride_gain: float = 1.00
-    rear_stride_gain: float = 0.92
-    front_swing_height_gain: float = 1.08
-    rear_swing_height_gain: float = 1.00
+    rear_stride_gain: float = 0.80
+    front_swing_height_gain: float = 1.05
+    rear_swing_height_gain: float = 0.64
+    rear_lift_rise_fraction: float = 0.42
+    rear_lift_fall_start: float = 0.58
     front_calf_lift_extra: float = 0.147
     rear_calf_lift_extra: float = 0.116
     front_thigh_delta_scale: float = 0.18
     rear_thigh_delta_scale: float = 0.16
 
-    preload_fraction: float = 0.084
+    preload_fraction: float = 0.10
+    post_touchdown_hold: float = 0.04
     front_x_bias: float = 0.003
     front_z_extend: float = -0.0014
     front_swing_forward_unfold: float = 0.0126
@@ -105,7 +114,7 @@ class FanfanSmallHighFreqReferenceGaitCfg(FanfanReferenceGaitCfg):
     diag_support_calf_push_amp: float = 0.021
     diag_support_thigh_back_amp: float = 0.0098
     diag_support_hip_amp: float = 0.0126
-    same_rear_unload_z_m: float = 0.0042
+    same_rear_unload_z_m: float = 0.0
     same_rear_calf_relief_amp: float = 0.0126
     same_rear_unload_hip_amp: float = 0.0098
     front_swing_body_x_shift_m: float = 0.0126
@@ -116,9 +125,9 @@ class FanfanSmallHighFreqReferenceGaitCfg(FanfanReferenceGaitCfg):
 
     def validate_parameters(self) -> None:
         ranges = {
-            "step_hz": (0.75, 0.95),
+            "step_hz": (0.75, 1.15),
             "stride_length": (0.024, 0.030),
-            "swing_height": (0.055, 0.070),
+            "swing_height": (0.045, 0.070),
             "duty_factor": (0.74, 0.80),
         }
         for name, (lower, upper) in ranges.items():
@@ -164,6 +173,9 @@ class FanfanReferenceGait:
         self.last_leg_phase = torch.zeros(self.num_envs, 4, device=self.device)
         self.last_swing_mask = torch.zeros(self.num_envs, 4, dtype=torch.bool, device=self.device)
         self.last_active_swing_one_hot = torch.zeros(self.num_envs, 4, device=self.device)
+        self.last_preload_gate = torch.zeros(self.num_envs, 4, device=self.device)
+        self.last_post_touchdown_gate = torch.zeros(self.num_envs, 4, device=self.device)
+        self.last_support_gate = torch.zeros(self.num_envs, 4, device=self.device)
         self.last_warmup = torch.zeros(self.num_envs, device=self.device)
         self.last_body_shift = torch.zeros(self.num_envs, 2, device=self.device)
         self.default_foot_x, self.default_foot_z = self._forward_sagittal(
@@ -247,6 +259,9 @@ class FanfanReferenceGait:
         self.last_leg_phase[env_ids] = 0.0
         self.last_swing_mask[env_ids] = False
         self.last_active_swing_one_hot[env_ids] = 0.0
+        self.last_preload_gate[env_ids] = 0.0
+        self.last_post_touchdown_gate[env_ids] = 0.0
+        self.last_support_gate[env_ids] = 0.0
         self.last_warmup[env_ids] = 0.0
         self.last_body_shift[env_ids] = 0.0
         self.last_predicted_foot_z[env_ids] = self.default_foot_z[env_ids]
@@ -479,13 +494,13 @@ class FanfanReferenceGait:
         warmup = torch.clamp(self.walk_time / max(float(self.cfg.warmup_sec), 1.0e-6), 0.0, 1.0)
         self.base_phase = torch.remainder(self.base_phase + frequency * self.dt, 1.0)
 
-        phase_offsets = torch.tensor(
-            [SWING_ORDER.index(leg) / 4.0 for leg in LEG_ORDER],
+        swing_start = torch.tensor(
+            [SMALL_HIGH_FREQUENCY_SWING_START[leg] for leg in LEG_ORDER],
             device=self.device,
             dtype=self.default_joint_pos.dtype,
         )
-        leg_phase = torch.remainder(self.base_phase.unsqueeze(1) - phase_offsets.unsqueeze(0), 1.0)
-        swing_fraction = min(0.235, max(0.12, 1.0 - float(self.cfg.duty_factor)))
+        leg_phase = torch.remainder(self.base_phase.unsqueeze(1) - swing_start.unsqueeze(0), 1.0)
+        swing_fraction = min(0.249, max(0.12, 1.0 - float(self.cfg.duty_factor)))
         swing_mask = leg_phase < swing_fraction
         active_one_hot = swing_mask.to(self.default_joint_pos.dtype)
         swing_progress = torch.clamp(leg_phase / swing_fraction, 0.0, 1.0)
@@ -495,6 +510,53 @@ class FanfanReferenceGait:
         swing_advance = self._smootherstep01(swing_progress)
         stance_return = self._smootherstep01(stance_progress)
         swing_shape = torch.sin(math.pi * swing_progress) ** 2 * swing_mask
+        rear_rise_end = min(0.45, max(0.20, float(self.cfg.rear_lift_rise_fraction)))
+        rear_fall_start = min(
+            0.80, max(rear_rise_end + 0.10, float(self.cfg.rear_lift_fall_start))
+        )
+        rear_lift_up = self._smootherstep01(swing_progress / rear_rise_end)
+        rear_lift_down = 1.0 - self._smootherstep01(
+            (swing_progress - rear_fall_start) / (1.0 - rear_fall_start)
+        )
+        rear_swing_shape = (
+            torch.minimum(rear_lift_up, rear_lift_down) * swing_mask
+        )
+        swing_shape = swing_shape.clone()
+        swing_shape[:, 2:4] = rear_swing_shape[:, 2:4]
+
+        preload_fraction = min(0.24, max(1.0e-6, float(self.cfg.preload_fraction)))
+        preload_progress = torch.clamp(
+            (leg_phase - (1.0 - preload_fraction)) / preload_fraction, 0.0, 1.0
+        )
+        pre_swing_gate = self._smootherstep01(preload_progress)
+        post_touchdown_hold = min(
+            0.12, max(1.0e-6, float(self.cfg.post_touchdown_hold))
+        )
+        post_progress = torch.clamp(
+            (leg_phase - swing_fraction) / post_touchdown_hold, 0.0, 1.0
+        )
+        landed_leg_gate = (
+            1.0 - self._smootherstep01(post_progress)
+        ) * ((leg_phase >= swing_fraction) & (leg_phase < swing_fraction + post_touchdown_hold))
+        stance_gate = (~swing_mask).to(self.default_joint_pos.dtype)
+        support_gate = stance_gate
+        preload_gate = torch.zeros_like(stance_gate)
+        swing_support_gate = torch.zeros_like(stance_gate)
+        for leg_index in range(4):
+            other_legs = [index for index in range(4) if index != leg_index]
+            preload_gate[:, other_legs] = torch.maximum(
+                preload_gate[:, other_legs],
+                pre_swing_gate[:, leg_index].unsqueeze(1) * stance_gate[:, other_legs],
+            )
+            swing_support_gate[:, other_legs] = torch.maximum(
+                swing_support_gate[:, other_legs],
+                active_one_hot[:, leg_index].unsqueeze(1) * stance_gate[:, other_legs],
+            )
+        post_touchdown_gate = landed_leg_gate * stance_gate
+        support_load_gate = torch.maximum(
+            preload_gate,
+            torch.maximum(swing_support_gate, post_touchdown_gate),
+        )
 
         stride_gain = torch.tensor(
             (
@@ -522,22 +584,32 @@ class FanfanReferenceGait:
         x_stance = self.default_foot_x + 0.5 * leg_stride - leg_stride * stance_return
         x_des = torch.where(swing_mask, x_swing, x_stance)
         z_des = self.default_foot_z + leg_height * swing_shape
+        support_joint_preload = support_load_gate.clone()
+        z_des -= 0.0012 * support_load_gate
 
-        # Smooth tripod loading. The active swing envelope is zero at both
-        # phase boundaries, so support targets do not jump at leg switches.
+        # The candidate/swing leg is excluded from support loading. Its
+        # diagonal stance partner gets a small extra preload.
         for active_leg in LEG_ORDER:
             active_idx = LEG_ORDER.index(active_leg)
-            gate = swing_shape[:, active_idx]
+            event_gate = torch.maximum(
+                active_one_hot[:, active_idx],
+                pre_swing_gate[:, active_idx],
+            )
+            diagonal_idx = LEG_ORDER.index(DIAGONAL_PARTNER[active_leg])
+            diagonal_gate = event_gate * stance_gate[:, diagonal_idx]
             if active_leg in FRONT_LEGS:
-                diagonal_idx = LEG_ORDER.index(DIAGONAL_PARTNER[active_leg])
-                same_rear_idx = LEG_ORDER.index(SAME_SIDE_REAR[active_leg])
-                z_des[:, diagonal_idx] -= 0.004 * gate
-                z_des[:, same_rear_idx] += 0.002 * gate
+                z_des[:, diagonal_idx] -= 0.0018 * diagonal_gate
+                support_joint_preload[:, diagonal_idx] += diagonal_gate
             else:
-                diagonal_idx = LEG_ORDER.index(DIAGONAL_PARTNER[active_leg])
-                z_des[:, diagonal_idx] -= 0.003 * gate
+                z_des[:, diagonal_idx] -= 0.0012 * diagonal_gate
+                support_joint_preload[:, diagonal_idx] += 0.75 * diagonal_gate
 
         thigh_target, calf_target = self._inverse_sagittal(x_des, z_des)
+        # Near full leg extension the Cartesian z request can saturate at the
+        # IK workspace boundary. A small calf extension target preserves the
+        # intended preload as position-error torque instead of unloading the
+        # support leg.
+        calf_target += 0.006 * torch.clamp(support_joint_preload, max=2.0)
         q_target = self.default_joint_pos.clone()
         hip_signs = torch.tensor(self.cfg.hip_outward_signs, device=self.device, dtype=q_target.dtype)
         q_target[:, 0::3] += -0.003 * swing_shape * hip_signs.unsqueeze(0)
@@ -572,6 +644,9 @@ class FanfanReferenceGait:
         self.last_leg_phase = leg_phase
         self.last_swing_mask = swing_mask
         self.last_active_swing_one_hot = active_one_hot
+        self.last_preload_gate = preload_gate
+        self.last_post_touchdown_gate = post_touchdown_gate
+        self.last_support_gate = support_gate
         self.last_warmup = warmup
         self.last_body_shift = body_shift
         self.last_predicted_foot_z = self._forward_sagittal(q[:, 1::3], q[:, 2::3])[1]
@@ -599,6 +674,9 @@ class FanfanReferenceGait:
             "leg_phase": self.last_leg_phase,
             "swing_mask": self.last_swing_mask,
             "active_swing_one_hot": self.last_active_swing_one_hot,
+            "preload_gate": self.last_preload_gate,
+            "post_touchdown_gate": self.last_post_touchdown_gate,
+            "support_gate": self.last_support_gate,
             "body_shift": self.last_body_shift,
             "policy_q_ref": self.last_q_ref,
             "predicted_foot_z": self.last_predicted_foot_z,
