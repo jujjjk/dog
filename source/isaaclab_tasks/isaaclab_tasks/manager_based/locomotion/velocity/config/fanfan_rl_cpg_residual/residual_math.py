@@ -44,3 +44,31 @@ def joint_mapping_index(
     if offset % cycle_steps >= active_steps:
         return -1
     return (offset // cycle_steps) % int(num_joints)
+
+
+def validate_reference_control_stage(stage: int, enable_vmc: bool, vmc_mode: str) -> None:
+    if stage not in (0, 1, 2, 3):
+        raise ValueError(f"control_stage must be 0, 1, 2, or 3; got {stage}.")
+    if vmc_mode not in ("off", "light", "full"):
+        raise ValueError(f"vmc_mode must be off, light, or full; got {vmc_mode!r}.")
+    if stage < 2 and (enable_vmc or vmc_mode != "off"):
+        raise ValueError("Stage 0/1 must run with enable_vmc=False and vmc_mode='off'.")
+    if stage == 2 and (not enable_vmc or vmc_mode != "light"):
+        raise ValueError("Stage 2 requires enable_vmc=True and vmc_mode='light'.")
+    if stage == 3 and (not enable_vmc or vmc_mode != "full"):
+        raise ValueError("Stage 3 requires enable_vmc=True and vmc_mode='full'.")
+
+
+def filter_vmc_delta(
+    raw_delta: torch.Tensor,
+    previous_delta: torch.Tensor,
+    *,
+    joint_limit_rad: float,
+    rate_limit_rad_s: float,
+    lowpass_alpha: float,
+    dt: float,
+) -> torch.Tensor:
+    raw_delta = torch.clamp(raw_delta, min=-joint_limit_rad, max=joint_limit_rad)
+    filtered = previous_delta + lowpass_alpha * (raw_delta - previous_delta)
+    max_step = rate_limit_rad_s * dt
+    return previous_delta + torch.clamp(filtered - previous_delta, min=-max_step, max=max_step)

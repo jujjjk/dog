@@ -60,6 +60,7 @@ def main():
         action_term = env.unwrapped.action_manager.get_term("joint_pos")
         if getattr(action_term.cfg, "action_mode", "") in {
             "reference_raw",
+            "reference_stage",
             "joint_mapping_debug",
             "csv_playback",
         }:
@@ -95,6 +96,7 @@ def main():
                 max_error = torch.max(torch.abs(debug["simulator_q_ref"] - joint_pos))
                 print(
                     f"[FANFAN DEAD GAIT PLAYER] t={step * env.unwrapped.step_dt:.2f}s "
+                    f"stage={int(debug['control_stage'][0])} "
                     f"phase={float(action_term.reference.base_phase[0]):.3f} active={active_name} "
                     f"frequency={float(debug['frequency'][0]):.3f}Hz "
                     f"stride={float(debug['stride'][0]):.4f}m "
@@ -102,6 +104,10 @@ def main():
                     f"phase_step={float(debug['phase_increment_per_step'][0]):.5f} "
                     f"cycle={float(debug['phase_cycle_time'][0]):.3f}s "
                     f"max_error={float(max_error):.4f}rad "
+                    f"tau_max={float(debug['tau_est_max'][0]):.2f}Nm "
+                    f"clips={float(debug['joint_limit_clipping_ratio'][0]):.2f}/"
+                    f"{float(debug['rate_limit_clipping_ratio'][0]):.2f}/"
+                    f"{float(debug['torque_clipping_ratio'][0]):.2f} "
                     f"rpy=({float(roll[0]):.3f},{float(pitch[0]):.3f},{float(yaw[0]):.3f})"
                 )
             step += 1

@@ -7,7 +7,8 @@ import torch
 
 LEG_ORDER = ("FR", "FL", "RR", "RL")
 SWING_ORDER = ("RR", "FR", "RL", "FL")
-REFERENCE_HIP_OUTWARD_SIGNS = (1.0, 1.0, -1.0, 1.0)
+LEGACY_REFERENCE_HIP_OUTWARD_SIGNS = (1.0, 1.0, -1.0, 1.0)
+URDF_HIP_OUTWARD_SIGNS = (-1.0, 1.0, -1.0, 1.0)
 LEG_START = {"FR": 0, "FL": 3, "RR": 6, "RL": 9}
 FRONT_LEGS = ("FR", "FL")
 REAR_LEGS = ("RR", "RL")
@@ -28,9 +29,14 @@ class FanfanReferenceGaitCfg:
     command_overspeed_end: float = 0.18
     max_stride_scale: float = 1.20
     max_frequency_scale: float = 1.10
+    small_high_frequency_mode: bool = False
+    reference_rate_limit_rad_s: float = 0.0
+    apply_default_pose_offsets: bool = True
+    hip_outward_signs: tuple[float, float, float, float] = LEGACY_REFERENCE_HIP_OUTWARD_SIGNS
 
     thigh_length: float = 0.1560608
     calf_length: float = 0.1489418
+    workspace_margin_m: float = 1.0e-5
     front_stride_gain: float = 0.92
     rear_stride_gain: float = 0.82
     front_swing_height_gain: float = 1.26
@@ -69,6 +75,58 @@ class FanfanReferenceGaitCfg:
     rear_swing_body_y_shift_m: float = 0.012
 
 
+@dataclass
+class FanfanSmallHighFreqReferenceGaitCfg(FanfanReferenceGaitCfg):
+    step_hz: float = 0.82
+    stride_length: float = 0.026
+    swing_height: float = 0.062
+    duty_factor: float = 0.78
+    warmup_sec: float = 4.0
+    small_high_frequency_mode: bool = True
+    reference_rate_limit_rad_s: float = 10.0
+    apply_default_pose_offsets: bool = False
+    hip_outward_signs: tuple[float, float, float, float] = URDF_HIP_OUTWARD_SIGNS
+
+    front_stride_gain: float = 1.00
+    rear_stride_gain: float = 0.92
+    front_swing_height_gain: float = 1.08
+    rear_swing_height_gain: float = 1.00
+    front_calf_lift_extra: float = 0.147
+    rear_calf_lift_extra: float = 0.116
+    front_thigh_delta_scale: float = 0.18
+    rear_thigh_delta_scale: float = 0.16
+
+    preload_fraction: float = 0.084
+    front_x_bias: float = 0.003
+    front_z_extend: float = -0.0014
+    front_swing_forward_unfold: float = 0.0126
+    support_stand_tall_m: float = 0.0042
+    diag_support_preload_z_m: float = 0.0084
+    diag_support_calf_push_amp: float = 0.021
+    diag_support_thigh_back_amp: float = 0.0098
+    diag_support_hip_amp: float = 0.0126
+    same_rear_unload_z_m: float = 0.0042
+    same_rear_calf_relief_amp: float = 0.0126
+    same_rear_unload_hip_amp: float = 0.0098
+    front_swing_body_x_shift_m: float = 0.0126
+    front_swing_body_y_shift_m: float = 0.0154
+    rear_swing_body_x_shift_m: float = 0.007
+    rear_swing_body_y_shift_m: float = 0.0084
+    workspace_margin_m: float = 0.005
+
+    def validate_parameters(self) -> None:
+        ranges = {
+            "step_hz": (0.75, 0.95),
+            "stride_length": (0.024, 0.030),
+            "swing_height": (0.055, 0.070),
+            "duty_factor": (0.74, 0.80),
+        }
+        for name, (lower, upper) in ranges.items():
+            value = float(getattr(self, name))
+            if not lower <= value <= upper:
+                raise ValueError(f"small_high_freq {name}={value} is outside [{lower}, {upper}].")
+
+
 class FanfanReferenceGait:
     """Vectorized one-leg-at-a-time wave gait shared by simulation and deployment."""
 
@@ -82,13 +140,17 @@ class FanfanReferenceGait:
         joint_limits: tuple[torch.Tensor, torch.Tensor] | None = None,
     ) -> None:
         self.cfg = cfg
+        validate_parameters = getattr(self.cfg, "validate_parameters", None)
+        if validate_parameters is not None:
+            validate_parameters()
         self.num_envs = int(num_envs)
         self.device = torch.device(device)
         self.dt = float(dt)
         self.default_joint_pos = default_joint_pos.to(self.device).clone()
         if self.default_joint_pos.ndim == 1:
             self.default_joint_pos = self.default_joint_pos.unsqueeze(0).repeat(self.num_envs, 1)
-        self.default_joint_pos = self._apply_default_pose_offsets(self.default_joint_pos)
+        if self.cfg.apply_default_pose_offsets:
+            self.default_joint_pos = self._apply_default_pose_offsets(self.default_joint_pos)
         self.joint_limits = joint_limits
 
         self.base_phase = torch.zeros(self.num_envs, device=self.device)
@@ -146,8 +208,9 @@ class FanfanReferenceGait:
         l1 = float(self.cfg.thigh_length)
         l2 = float(self.cfg.calf_length)
         reach = torch.sqrt(torch.clamp(x * x + z * z, min=1.0e-8))
-        min_reach = abs(l1 - l2) + 1.0e-5
-        max_reach = l1 + l2 - 1.0e-5
+        workspace_margin = max(float(self.cfg.workspace_margin_m), 1.0e-5)
+        min_reach = abs(l1 - l2) + workspace_margin
+        max_reach = l1 + l2 - workspace_margin
         scale = torch.clamp(reach, min=min_reach, max=max_reach) / reach
         x = x * scale
         z = z * scale
@@ -214,6 +277,9 @@ class FanfanReferenceGait:
         return walk_gate, u, stride, frequency, swing_height
 
     def update(self, commands: torch.Tensor) -> torch.Tensor:
+        if self.cfg.small_high_frequency_mode:
+            return self._update_small_high_frequency(commands)
+
         walk_gate, _u, stride, frequency, swing_height = self._command_parameters(commands)
         moving = walk_gate > 1.0e-4
         self.walk_time = torch.where(moving, self.walk_time + self.dt, torch.zeros_like(self.walk_time))
@@ -294,7 +360,7 @@ class FanfanReferenceGait:
         x_des = torch.where(swing_mask, x_swing, x_stance)
         z_des = torch.where(swing_mask, z_swing, z_stance)
 
-        hip_outward_signs = torch.tensor(REFERENCE_HIP_OUTWARD_SIGNS, device=q.device, dtype=q.dtype)
+        hip_outward_signs = torch.tensor(self.cfg.hip_outward_signs, device=q.device, dtype=q.dtype)
         # Keep the real-machine gait semantics here. Any URDF sign difference
         # belongs in FanfanJointSemanticAdapter, not in the gait equations.
         hip_delta = -0.004 * swing_shape * hip_outward_signs
@@ -391,6 +457,112 @@ class FanfanReferenceGait:
         if self.joint_limits is not None:
             lower, upper = self.joint_limits
             q = torch.clamp(q, lower.to(q.device), upper.to(q.device))
+
+        self.last_q_ref = q
+        self.last_walk_gate = walk_gate
+        self.last_frequency = frequency
+        self.last_stride = stride
+        self.last_swing_height = swing_height
+        self.last_leg_phase = leg_phase
+        self.last_swing_mask = swing_mask
+        self.last_active_swing_one_hot = active_one_hot
+        self.last_warmup = warmup
+        self.last_body_shift = body_shift
+        self.last_predicted_foot_z = self._forward_sagittal(q[:, 1::3], q[:, 2::3])[1]
+        self.last_predicted_foot_lift = self.last_predicted_foot_z - self.default_foot_z
+        return q
+
+    def _update_small_high_frequency(self, commands: torch.Tensor) -> torch.Tensor:
+        walk_gate, _u, stride, frequency, swing_height = self._command_parameters(commands)
+        moving = walk_gate > 1.0e-4
+        self.walk_time = torch.where(moving, self.walk_time + self.dt, torch.zeros_like(self.walk_time))
+        warmup = torch.clamp(self.walk_time / max(float(self.cfg.warmup_sec), 1.0e-6), 0.0, 1.0)
+        self.base_phase = torch.remainder(self.base_phase + frequency * self.dt, 1.0)
+
+        phase_offsets = torch.tensor(
+            [SWING_ORDER.index(leg) / 4.0 for leg in LEG_ORDER],
+            device=self.device,
+            dtype=self.default_joint_pos.dtype,
+        )
+        leg_phase = torch.remainder(self.base_phase.unsqueeze(1) - phase_offsets.unsqueeze(0), 1.0)
+        swing_fraction = min(0.235, max(0.12, 1.0 - float(self.cfg.duty_factor)))
+        swing_mask = leg_phase < swing_fraction
+        active_one_hot = swing_mask.to(self.default_joint_pos.dtype)
+        swing_progress = torch.clamp(leg_phase / swing_fraction, 0.0, 1.0)
+        stance_progress = torch.clamp(
+            (leg_phase - swing_fraction) / (1.0 - swing_fraction), 0.0, 1.0
+        )
+        swing_advance = self._smootherstep01(swing_progress)
+        stance_return = self._smootherstep01(stance_progress)
+        swing_shape = torch.sin(math.pi * swing_progress) ** 2 * swing_mask
+
+        stride_gain = torch.tensor(
+            (
+                self.cfg.front_stride_gain,
+                self.cfg.front_stride_gain,
+                self.cfg.rear_stride_gain,
+                self.cfg.rear_stride_gain,
+            ),
+            device=self.device,
+            dtype=self.default_joint_pos.dtype,
+        )
+        height_gain = torch.tensor(
+            (
+                self.cfg.front_swing_height_gain,
+                self.cfg.front_swing_height_gain,
+                self.cfg.rear_swing_height_gain,
+                self.cfg.rear_swing_height_gain,
+            ),
+            device=self.device,
+            dtype=self.default_joint_pos.dtype,
+        )
+        leg_stride = stride.unsqueeze(1) * stride_gain.unsqueeze(0)
+        leg_height = swing_height.unsqueeze(1) * height_gain.unsqueeze(0)
+        x_swing = self.default_foot_x - 0.5 * leg_stride + leg_stride * swing_advance
+        x_stance = self.default_foot_x + 0.5 * leg_stride - leg_stride * stance_return
+        x_des = torch.where(swing_mask, x_swing, x_stance)
+        z_des = self.default_foot_z + leg_height * swing_shape
+
+        # Smooth tripod loading. The active swing envelope is zero at both
+        # phase boundaries, so support targets do not jump at leg switches.
+        for active_leg in LEG_ORDER:
+            active_idx = LEG_ORDER.index(active_leg)
+            gate = swing_shape[:, active_idx]
+            if active_leg in FRONT_LEGS:
+                diagonal_idx = LEG_ORDER.index(DIAGONAL_PARTNER[active_leg])
+                same_rear_idx = LEG_ORDER.index(SAME_SIDE_REAR[active_leg])
+                z_des[:, diagonal_idx] -= 0.004 * gate
+                z_des[:, same_rear_idx] += 0.002 * gate
+            else:
+                diagonal_idx = LEG_ORDER.index(DIAGONAL_PARTNER[active_leg])
+                z_des[:, diagonal_idx] -= 0.003 * gate
+
+        thigh_target, calf_target = self._inverse_sagittal(x_des, z_des)
+        q_target = self.default_joint_pos.clone()
+        hip_signs = torch.tensor(self.cfg.hip_outward_signs, device=self.device, dtype=q_target.dtype)
+        q_target[:, 0::3] += -0.003 * swing_shape * hip_signs.unsqueeze(0)
+        q_target[:, 1::3] = thigh_target
+        q_target[:, 2::3] = calf_target
+
+        q = self.default_joint_pos + warmup.unsqueeze(1) * (q_target - self.default_joint_pos)
+        q = torch.where(moving.unsqueeze(1), q, self.default_joint_pos)
+        if float(self.cfg.reference_rate_limit_rad_s) > 0.0:
+            max_step = float(self.cfg.reference_rate_limit_rad_s) * self.dt
+            q = self.last_q_ref + torch.clamp(q - self.last_q_ref, min=-max_step, max=max_step)
+        if self.joint_limits is not None:
+            lower, upper = self.joint_limits
+            q = torch.clamp(q, lower.to(q.device), upper.to(q.device))
+
+        body_shift = torch.zeros(self.num_envs, 2, device=self.device, dtype=q.dtype)
+        body_shift[:, 0] = 0.006 * (
+            swing_shape[:, LEG_ORDER.index("FR")] + swing_shape[:, LEG_ORDER.index("FL")]
+        )
+        body_shift[:, 1] = 0.006 * (
+            swing_shape[:, LEG_ORDER.index("FR")]
+            - swing_shape[:, LEG_ORDER.index("FL")]
+            + swing_shape[:, LEG_ORDER.index("RR")]
+            - swing_shape[:, LEG_ORDER.index("RL")]
+        )
 
         self.last_q_ref = q
         self.last_walk_gate = walk_gate

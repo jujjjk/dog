@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 import os
+from typing import Protocol
 
 import torch
 
@@ -14,9 +15,22 @@ from isaaclab_tasks.manager_based.locomotion.velocity.config.fanfan_a1_clean.dep
 
 from .joint_semantics import FanfanJointSemanticAdapter, FanfanJointSemanticCfg
 from .curriculum_profiles import get_wave_stage_number
-from .csv_playback import LoopingJointCsvPlayback, load_joint_csv
 from .reference_gait import FanfanReferenceGait, FanfanReferenceGaitCfg
-from .residual_math import clamp_joint_targets, filter_residual, joint_mapping_index
+from .residual_math import (
+    clamp_joint_targets,
+    filter_residual,
+    filter_vmc_delta,
+    joint_mapping_index,
+    validate_reference_control_stage,
+)
+
+
+class FullVmcProvider(Protocol):
+    def compute(
+        self,
+        action_term: "WaveResidualJointPositionAction",
+        q_cpg_policy: torch.Tensor,
+    ) -> torch.Tensor: ...
 
 
 class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
@@ -53,10 +67,22 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
             joint_limits=None,
         )
         self._policy_joint_limits = limits_policy
+        self._foot_body_ids, resolved_foot_names = self._asset.find_bodies(
+            ["FR_foot", "FL_foot", "RR_foot", "RL_foot"], preserve_order=True
+        )
+        if tuple(resolved_foot_names) != ("FR_foot", "FL_foot", "RR_foot", "RL_foot"):
+            raise ValueError(f"Unexpected Fanfan foot body order: {resolved_foot_names}")
+        self._validate_control_stage()
         self._residual_scale = self._make_residual_scale()
         self._filtered_residual = torch.zeros_like(self.processed_actions)
+        self._filtered_vmc_delta = torch.zeros_like(self.processed_actions)
         self.last_q_ref_policy = self.reference.default_joint_pos.clone()
         self.last_q_ref = self.semantic_adapter.policy_to_sim(self.last_q_ref_policy)
+        self.last_q_cpg_policy = self.last_q_ref_policy.clone()
+        self.last_q_cpg = self.last_q_ref.clone()
+        self.last_q_vmc_delta = torch.zeros_like(self.processed_actions)
+        self._previous_raw_target = self.last_q_ref.clone()
+        self.last_raw_target_rate = torch.zeros_like(self.processed_actions)
         self.last_delta_q_rl = torch.zeros_like(self.processed_actions)
         self.last_q_raw_policy = self.last_q_ref_policy.clone()
         self.last_q_raw_reference = self.last_q_ref.clone()
@@ -83,6 +109,13 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
         self._csv_playback_time = torch.zeros(self.num_envs, device=self.device)
         self._csv_playback = None
         if cfg.action_mode == "csv_playback":
+            try:
+                from .csv_playback import LoopingJointCsvPlayback, load_joint_csv
+            except ModuleNotFoundError as exc:
+                raise ModuleNotFoundError(
+                    "CsvPlayback-v0 requires fanfan_rl_cpg_residual/csv_playback.py. "
+                    "The file is not needed by Reference or SmallHighFreq Stage 0/1/2 tasks."
+                ) from exc
             csv_path = os.environ.get("FANFAN_CSV_PLAYBACK_PATH", cfg.csv_playback_path)
             times, values, value_space = load_joint_csv(csv_path)
             if value_space == "real":
@@ -91,6 +124,15 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
             print(
                 f"[FANFAN CSV PLAYBACK] loaded {values.shape[0]} frames from {csv_path}, "
                 f"duration={self._csv_playback.duration:.3f}s, source={value_space}"
+            )
+
+    def _validate_control_stage(self) -> None:
+        stage = int(self.cfg.control_stage)
+        mode = str(self.cfg.vmc_mode)
+        validate_reference_control_stage(stage, bool(self.cfg.enable_vmc), mode)
+        if stage == 3 and self.cfg.full_vmc_provider is None:
+            raise NotImplementedError(
+                "Full VMC has no calibrated provider. Use Stage 0/1/2 until a full VMC provider is injected."
             )
 
     def _make_residual_scale(self) -> torch.Tensor:
@@ -108,6 +150,99 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
 
     def _commands(self) -> torch.Tensor:
         return self._env.command_manager.get_command(self.cfg.command_name)
+
+    @staticmethod
+    def _roll_pitch_from_quat(quat_wxyz: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        w, x, y, z = quat_wxyz.unbind(dim=-1)
+        sin_roll = 2.0 * (w * x + y * z)
+        cos_roll = 1.0 - 2.0 * (x * x + y * y)
+        roll = torch.atan2(sin_roll, cos_roll)
+        sin_pitch = torch.clamp(2.0 * (w * y - z * x), -1.0, 1.0)
+        pitch = torch.asin(sin_pitch)
+        return roll, pitch
+
+    def _compute_vmc_delta(self, q_cpg_policy: torch.Tensor) -> torch.Tensor:
+        if not self.cfg.enable_vmc or self.cfg.vmc_mode == "off":
+            self._filtered_vmc_delta.zero_()
+            return self._filtered_vmc_delta
+        if self.cfg.vmc_mode == "full":
+            provider = self.cfg.full_vmc_provider
+            if provider is None:
+                raise NotImplementedError("Full VMC provider is not configured.")
+            delta = provider.compute(self, q_cpg_policy)
+            if delta.shape != q_cpg_policy.shape:
+                raise ValueError(
+                    f"Full VMC returned {tuple(delta.shape)}, expected {tuple(q_cpg_policy.shape)}."
+                )
+            return delta
+        if self.cfg.vmc_mode != "light":
+            raise ValueError(f"Unsupported VMC mode: {self.cfg.vmc_mode!r}.")
+
+        roll, pitch = self._roll_pitch_from_quat(self._asset.data.root_quat_w)
+        ang_vel = self._asset.data.root_ang_vel_b
+        root_height = self._asset.data.root_pos_w[:, 2]
+        roll_cmd = float(self.cfg.vmc_roll_kp_m_per_rad) * roll
+        roll_cmd += float(self.cfg.vmc_roll_kd_m_per_rad_s) * ang_vel[:, 0]
+        pitch_cmd = float(self.cfg.vmc_pitch_kp_m_per_rad) * pitch
+        pitch_cmd += float(self.cfg.vmc_pitch_kd_m_per_rad_s) * ang_vel[:, 1]
+        height_cmd = -float(self.cfg.vmc_height_kp) * (
+            float(self.cfg.vmc_body_height_target_m) - root_height
+        )
+
+        side = torch.tensor((-1.0, 1.0, -1.0, 1.0), device=self.device)
+        fore_aft = torch.tensor((1.0, 1.0, -1.0, -1.0), device=self.device)
+        dz = height_cmd.unsqueeze(1)
+        dz = dz - side.unsqueeze(0) * roll_cmd.unsqueeze(1)
+        dz = dz - fore_aft.unsqueeze(0) * pitch_cmd.unsqueeze(1)
+        dz = torch.clamp(
+            dz,
+            min=-float(self.cfg.vmc_foot_z_limit_m),
+            max=float(self.cfg.vmc_foot_z_limit_m),
+        )
+
+        swing_fraction = min(
+            0.235,
+            max(0.12, 1.0 - min(max(float(self.reference.cfg.duty_factor), 0.70), 0.88)),
+        )
+        leg_phase = self.reference.last_leg_phase
+        blend_width = max(float(self.cfg.vmc_stance_blend_fraction), 1.0e-4)
+        stance_in = self.reference._smootherstep01((leg_phase - swing_fraction) / blend_width)
+        stance_out = self.reference._smootherstep01((1.0 - leg_phase) / blend_width)
+        stance_blend = stance_in * stance_out * (~self.reference.last_swing_mask)
+        dz *= stance_blend
+
+        thigh = q_cpg_policy[:, 1::3]
+        calf = q_cpg_policy[:, 2::3]
+        foot_x, foot_z = self.reference._forward_sagittal(thigh, calf)
+        thigh_target, calf_target = self.reference._inverse_sagittal(foot_x, foot_z + dz)
+        raw_delta = torch.zeros_like(q_cpg_policy)
+        raw_delta[:, 1::3] = thigh_target - thigh
+        raw_delta[:, 2::3] = calf_target - calf
+        filtered = filter_vmc_delta(
+            raw_delta,
+            self._filtered_vmc_delta,
+            joint_limit_rad=float(self.cfg.vmc_joint_delta_limit_rad),
+            rate_limit_rad_s=float(self.cfg.vmc_joint_rate_limit_rad_s),
+            lowpass_alpha=float(self.cfg.vmc_lowpass_alpha),
+            dt=float(self._env.step_dt),
+        )
+        joint_stance_blend = torch.repeat_interleave(stance_blend, repeats=3, dim=1)
+        filtered *= joint_stance_blend
+        self._filtered_vmc_delta.copy_(filtered)
+        return self._filtered_vmc_delta
+
+    def _estimate_pd_torque(self, q_target: torch.Tensor) -> None:
+        q_current = self._asset.data.joint_pos[:, self._joint_ids]
+        qd_current = self._asset.data.joint_vel[:, self._joint_ids]
+        kp_eff = max(float(self.cfg.sim_kp), 1.0e-6) * self._kp_scale * self._motor_strength
+        kd_eff = max(float(self.cfg.sim_kd), 0.0) * self._kd_scale * self._motor_strength
+        self.last_tau_est[:] = kp_eff * (q_target - q_current) - kd_eff * qd_current
+
+    def _record_raw_target_rate(self, q_target: torch.Tensor) -> None:
+        self.last_raw_target_rate[:] = (
+            q_target - self._previous_raw_target
+        ) / float(self._env.step_dt)
+        self._previous_raw_target[:] = q_target
 
     def _clamp_to_hard_joint_limits(self, q_sim: torch.Tensor) -> torch.Tensor:
         clamped, clip_mask = clamp_joint_targets(
@@ -138,6 +273,10 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
     def _set_direct_playback_output(self, q_policy: torch.Tensor) -> None:
         q_sim_unclamped = self.semantic_adapter.policy_to_sim(q_policy)
         q_sim = self._clamp_to_hard_joint_limits(q_sim_unclamped)
+        self._record_raw_target_rate(q_sim)
+        self.last_q_cpg_policy[:] = q_policy
+        self.last_q_cpg[:] = q_sim_unclamped
+        self.last_q_vmc_delta.zero_()
         self.last_q_ref_policy[:] = q_policy
         self.last_q_ref[:] = q_sim_unclamped
         self.last_delta_q_rl.zero_()
@@ -214,7 +353,9 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
             self._set_direct_playback_output(q_ref_policy)
             return
         else:
-            q_ref_policy = self.reference.update(self._commands())
+            q_cpg_policy = self.reference.update(self._commands())
+            q_vmc_delta = self._compute_vmc_delta(q_cpg_policy)
+            q_ref_policy = q_cpg_policy + q_vmc_delta
 
         if self.cfg.action_mode != "reference_residual":
             delta = torch.zeros_like(actions)
@@ -227,12 +368,19 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
             delta = self._filtered_residual
 
         q_raw_policy = q_ref_policy + delta
+        q_cpg_sim = self.semantic_adapter.policy_to_sim(q_cpg_policy)
         q_ref_sim = self.semantic_adapter.policy_to_sim(q_ref_policy)
         q_raw = self.semantic_adapter.policy_to_sim(q_raw_policy)
         q_before_joint_limit = q_raw.clone()
-        if self.cfg.clip is not None:
+        if self.cfg.action_mode == "reference_stage":
+            q_raw = self._clamp_to_hard_joint_limits(q_raw)
+        elif self.cfg.clip is not None:
             q_raw = torch.clamp(q_raw, min=self._clip[:, :, 0], max=self._clip[:, :, 1])
         self._deploy_q_raw[:] = q_raw
+        self._record_raw_target_rate(q_raw)
+        self.last_q_cpg_policy[:] = q_cpg_policy
+        self.last_q_cpg[:] = q_cpg_sim
+        self.last_q_vmc_delta[:] = q_vmc_delta
         self.last_q_ref_policy[:] = q_ref_policy
         self.last_q_ref[:] = q_ref_sim
         self.last_delta_q_rl[:] = delta
@@ -253,7 +401,7 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
             self.last_q_before_delay[:] = q_raw
             self.last_q_after_delay[:] = q_raw
             self.last_qdot_cmd.zero_()
-            self.last_tau_est.zero_()
+            self._estimate_pd_torque(q_raw)
             self.last_rate_clip_mask.zero_()
             self.last_accel_clip_mask.zero_()
             self.last_torque_clip_mask.zero_()
@@ -349,10 +497,18 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
         self.reference.reset(env_ids)
         self._csv_playback_time[env_ids] = 0.0
         self._filtered_residual[env_ids] = 0.0
+        self._filtered_vmc_delta[env_ids] = 0.0
+        self.last_q_cpg_policy[env_ids] = self.reference.default_joint_pos[env_ids]
+        self.last_q_cpg[env_ids] = self.semantic_adapter.policy_to_sim(
+            self.reference.default_joint_pos[env_ids]
+        )
+        self.last_q_vmc_delta[env_ids] = 0.0
         self.last_q_ref_policy[env_ids] = self.reference.default_joint_pos[env_ids]
         self.last_q_ref[env_ids] = self.semantic_adapter.policy_to_sim(
             self.reference.default_joint_pos[env_ids]
         )
+        self._previous_raw_target[env_ids] = self.last_q_ref[env_ids]
+        self.last_raw_target_rate[env_ids] = 0.0
         self.last_delta_q_rl[env_ids] = 0.0
         self.last_q_raw_policy[env_ids] = self.reference.default_joint_pos[env_ids]
         self.last_q_raw_reference[env_ids] = self.last_q_ref[env_ids]
@@ -390,11 +546,17 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
         )
         debug.update(
             {
+                "control_stage": torch.full(
+                    (self.num_envs,), int(self.cfg.control_stage), device=self.device, dtype=torch.long
+                ),
                 "active_swing_leg": active_leg,
                 "joint_mapping_index": torch.full(
                     (self.num_envs,), self._joint_mapping_index, device=self.device, dtype=torch.long
                 ),
                 "stance_mask": ~self.reference.last_swing_mask,
+                "q_cpg_policy": self.last_q_cpg_policy,
+                "q_cpg_simulator": self.last_q_cpg,
+                "q_vmc_delta": self.last_q_vmc_delta,
                 "policy_q_ref": self.last_q_ref_policy,
                 "simulator_q_ref": self.last_q_ref,
                 "q_after_joint_limit": self.last_q_after_joint_limit,
@@ -415,6 +577,10 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
                 "acceleration_clip_mask": self.last_accel_clip_mask,
                 "torque_clip_mask": self.last_torque_clip_mask,
                 "tau_est_per_joint": self.last_tau_est,
+                "raw_target_rate_per_joint": self.last_raw_target_rate,
+                "raw_target_rate_max": torch.max(
+                    torch.abs(self.last_raw_target_rate), dim=1
+                ).values,
                 "tau_est_max": torch.max(torch.abs(self.last_tau_est), dim=1).values,
                 "tau_est_mean": torch.mean(torch.abs(self.last_tau_est), dim=1),
                 "over_6nm_ratio": torch.mean((torch.abs(self.last_tau_est) > 6.0).to(self.last_tau_est.dtype), dim=1),
@@ -431,6 +597,7 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
                     torch.zeros_like(self.reference.last_frequency),
                 ),
                 "predicted_foot_height": self.reference.last_predicted_foot_lift,
+                "actual_foot_height": self._asset.data.body_pos_w[:, self._foot_body_ids, 2],
             }
         )
         return debug
@@ -460,3 +627,18 @@ class WaveResidualJointPositionActionCfg(DeployFilteredJointPositionActionCfg):
     joint_mapping_initial_hold_sec: float = 2.0
     joint_limit_warning_interval_sec: float = 1.0
     csv_playback_path: str = "logs/reference_debug/fanfan_gait_playback.csv"
+    control_stage: int = 1
+    enable_vmc: bool = False
+    vmc_mode: str = "off"
+    vmc_roll_kp_m_per_rad: float = 0.020
+    vmc_roll_kd_m_per_rad_s: float = 0.003
+    vmc_pitch_kp_m_per_rad: float = 0.015
+    vmc_pitch_kd_m_per_rad_s: float = 0.003
+    vmc_body_height_target_m: float = 0.293
+    vmc_height_kp: float = 0.10
+    vmc_foot_z_limit_m: float = 0.006
+    vmc_joint_delta_limit_rad: float = 0.03
+    vmc_joint_rate_limit_rad_s: float = 0.5
+    vmc_lowpass_alpha: float = 0.20
+    vmc_stance_blend_fraction: float = 0.06
+    full_vmc_provider: FullVmcProvider | None = None

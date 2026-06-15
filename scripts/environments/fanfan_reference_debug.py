@@ -69,7 +69,10 @@ def main():
         env_cfg.actions.joint_pos.enable_action_delay = args_cli.delay_steps > 0
 
     mode = str(env_cfg.actions.joint_pos.action_mode)
-    output_path = Path(args_cli.output or f"logs/reference_debug/{mode}.csv")
+    default_output_name = args_cli.task.removeprefix("Isaac-Velocity-Flat-").removesuffix("-v0")
+    output_path = Path(
+        args_cli.output or f"logs/reference_debug/{default_output_name}.csv"
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     env = gym.make(args_cli.task, cfg=env_cfg)
@@ -81,6 +84,7 @@ def main():
     header = [
         "time",
         "mode",
+        "stage",
         "phase",
         "active_swing_leg",
         "joint_mapping_joint",
@@ -106,6 +110,7 @@ def main():
         "max_abs_q_ref_minus_final",
         "tau_est_max",
         "tau_est_mean",
+        "raw_target_rate_max",
         "over_6nm_ratio",
         "over_8nm_ratio",
         "over_10nm_ratio",
@@ -120,6 +125,9 @@ def main():
         "rate_limit_clip_mask",
         "acceleration_clip_mask",
         "torque_clip_mask",
+        "q_cpg_semantic",
+        "q_cpg_isaac",
+        "q_vmc_delta",
         "q_ref_semantic",
         "q_ref_isaac",
         "q_after_joint_limit",
@@ -133,12 +141,22 @@ def main():
         "q_ref_error",
         "q_cmd_error",
         "tau_est",
+        "raw_target_rate",
         "base_ang_vel",
+        "predicted_foot_height",
+        "actual_foot_height",
     ):
         header.extend(
             _vector_columns(
                 prefix,
-                4 if prefix in ("swing_mask", "stance_mask") else (3 if prefix == "base_ang_vel" else 12),
+                4
+                if prefix in (
+                    "swing_mask",
+                    "stance_mask",
+                    "predicted_foot_height",
+                    "actual_foot_height",
+                )
+                else (3 if prefix == "base_ang_vel" else 12),
             )
         )
 
@@ -174,6 +192,7 @@ def main():
                 row = [
                     step * float(base_env.step_dt),
                     mode,
+                    int(_scalar(debug["control_stage"])),
                     _scalar(action_term.reference.base_phase),
                     active_name,
                     mapping_name,
@@ -199,6 +218,7 @@ def main():
                     float(torch.max(torch.abs(debug["simulator_q_ref"] - debug["final_q_cmd"])).detach().cpu()),
                     _scalar(debug["tau_est_max"]),
                     _scalar(debug["tau_est_mean"]),
+                    _scalar(debug["raw_target_rate_max"]),
                     _scalar(debug["over_6nm_ratio"]),
                     _scalar(debug["over_8nm_ratio"]),
                     _scalar(debug["over_10nm_ratio"]),
@@ -212,6 +232,9 @@ def main():
                 row += _row_vector(debug["rate_limit_clip_mask"].to(torch.float32))
                 row += _row_vector(debug["acceleration_clip_mask"].to(torch.float32))
                 row += _row_vector(debug["torque_clip_mask"].to(torch.float32))
+                row += _row_vector(debug["q_cpg_policy"])
+                row += _row_vector(debug["q_cpg_simulator"])
+                row += _row_vector(debug["q_vmc_delta"])
                 row += _row_vector(debug["policy_q_ref"])
                 row += _row_vector(debug["simulator_q_ref"])
                 row += _row_vector(debug["q_after_joint_limit"])
@@ -225,15 +248,20 @@ def main():
                 row += _row_vector(q_ref_error)
                 row += _row_vector(q_cmd_error)
                 row += _row_vector(debug["tau_est_per_joint"])
+                row += _row_vector(debug["raw_target_rate_per_joint"])
                 row += _row_vector(robot.data.root_ang_vel_b)
+                row += _row_vector(debug["predicted_foot_height"])
+                row += _row_vector(debug["actual_foot_height"])
                 writer.writerow(row)
 
                 if step % max(1, round(1.0 / float(base_env.step_dt))) == 0:
                     max_error = torch.max(torch.abs(debug["simulator_q_ref"] - debug["final_q_cmd"]))
                     print(
                         f"[REFERENCE_DEBUG] t={step * base_env.step_dt:6.2f}s "
+                        f"stage={int(_scalar(debug['control_stage']))} "
                         f"phase={_scalar(action_term.reference.base_phase):.3f} active={active_name} "
                         f"tau_max={_scalar(debug['tau_est_max']):.2f}Nm "
+                        f"qdot_raw_max={_scalar(debug['raw_target_rate_max']):.2f}rad/s "
                         f"max|q_ref-q_cmd|={float(max_error.detach().cpu()):.4f}rad "
                         f"clips(j/r/a/t)={_scalar(debug['joint_limit_clipping_ratio']):.2f}/"
                         f"{_scalar(debug['rate_limit_clipping_ratio']):.2f}/"

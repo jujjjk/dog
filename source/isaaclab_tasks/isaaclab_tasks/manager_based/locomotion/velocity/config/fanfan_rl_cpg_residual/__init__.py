@@ -17,6 +17,16 @@ gym.register(
     },
 )
 gym.register(
+    id="Isaac-Velocity-Flat-FanfanRlCpgResidual-SmallHighFreq-v0",
+    **_COMMON,
+    kwargs={
+        "env_cfg_entry_point": (
+            f"{__name__}.flat_env_cfg:FanfanRlCpgResidualSmallHighFreqEnvCfg"
+        ),
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:FanfanRlCpgResidualPPORunnerCfg",
+    },
+)
+gym.register(
     id="Isaac-Velocity-Flat-FanfanRlCpgResidual-Play-v0",
     **_COMMON,
     kwargs={
@@ -46,6 +56,23 @@ _REFERENCE_DEBUG_TASKS = {
 }
 
 for suffix, cfg_name in _REFERENCE_DEBUG_TASKS.items():
+    gym.register(
+        id=f"Isaac-Velocity-Flat-FanfanRlCpgResidual-{suffix}-v0",
+        **_COMMON,
+        kwargs={
+            "env_cfg_entry_point": f"{__name__}.flat_env_cfg:{cfg_name}",
+            "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:FanfanRlCpgResidualPPORunnerCfg",
+        },
+    )
+
+_SMALL_HIGH_FREQ_REFERENCE_TASKS = {
+    "SmallHighFreq-Reference": "FanfanRlCpgResidualSmallHighFreqReferenceEnvCfg",
+    "SmallHighFreq-Stage0-Reference": "FanfanRlCpgResidualSmallHighFreqStage0ReferenceEnvCfg",
+    "SmallHighFreq-Stage1-Reference": "FanfanRlCpgResidualSmallHighFreqStage1ReferenceEnvCfg",
+    "SmallHighFreq-Stage2-Reference": "FanfanRlCpgResidualSmallHighFreqStage2ReferenceEnvCfg",
+}
+
+for suffix, cfg_name in _SMALL_HIGH_FREQ_REFERENCE_TASKS.items():
     gym.register(
         id=f"Isaac-Velocity-Flat-FanfanRlCpgResidual-{suffix}-v0",
         **_COMMON,

@@ -1,5 +1,111 @@
 # Fanfan Wave Gait Residual
 
+## Small high-frequency reference-only gait
+
+The residual task now has a separate conservative small-step wave gait. It
+does not replace or modify the original big-stride reference. Reference tasks
+use the 7.242 kg
+`fanfan_mass_scaled_only_trunk_plus_800g.urdf` and a distinct converted USD
+filename so a cached USD from the old 2.92 kg URDF cannot be reused.
+
+URDF selection order is:
+
+1. `FANFAN_HEAVY_URDF_PATH`
+2. `FANFAN_URDF_PATH`
+3. `<workspace>/fanfan/urdf/fanfan_mass_scaled_only_trunk_plus_800g.urdf`
+
+Startup validates the 12-joint `FR, FL, RR, RL` order, every joint origin,
+axis and limit, the `17 N*m / 44 rad/s` URDF limits, total and Trunk mass, and
+the `0.15606 / 0.14894 m` leg lengths. A mismatch stops the task immediately.
+The small gait uses the unmodified real-machine stand pose as its reference
+zero; it does not inherit the legacy gait's hidden hip or rear-leg offsets.
+
+Default small-high-frequency parameters:
+
+```text
+step_hz       = 0.82 Hz
+stride_length = 0.026 m
+swing_height  = 0.062 m
+duty_factor   = 0.78
+warmup_sec    = 4.0 s
+swing_order   = RR -> FR -> RL -> FL
+```
+
+The gait remains one-leg-at-a-time. The front swing-height gain is `1.08`,
+rear gain is `1.00`, and the front/rear stride gains are `1.00/0.92`. Its IK
+keeps a `5 mm` radial workspace margin and caps generated reference changes at
+`10 rad/s`, below the RS01 rated-speed value of about `10.47 rad/s`. A 36 V supply gives more speed-response
+headroom than 24 V, but does not change the normal `6 N*m` reference budget,
+the URDF limits, or the `17 N*m` actuator hard cap.
+
+The URDF-based trajectory audit measures about `11.8 rad/s` without this
+reference slew cap. A full `62-67 mm` lift at `0.82 Hz` is therefore not
+compatible with a raw `2.1 rad/s` joint-target ceiling from the selected
+near-extended stand pose. Stage 1 deliberately keeps the requested
+`2.1 rad/s` deployment limiter and logs its clipping ratio; frequent clipping
+means swing height/frequency must be reduced or the deployment rate budget
+must be revalidated before hardware use.
+
+### Reference stages
+
+All stages ignore the zero-agent action, use fixed `cmd_x=0.15`, and disable
+policy loading, residuals, delay, randomization, observation noise, pushes,
+rewards, curriculum and automatic fall reset.
+
+| Stage | Control path |
+| --- | --- |
+| 0 | CPG/IK -> policy-to-sim -> URDF joint clamp |
+| 1 | Stage 0 + `2.1 rad/s` rate + `100 rad/s^2` acceleration + `6 N*m` target-error limits |
+| 2 | CPG/IK + bounded light VMC -> Stage-1 safety chain |
+| 3 | Reserved full-VMC provider; deliberately refuses to run until calibrated |
+
+Light VMC only changes stance-leg sagittal targets. It uses roll/pitch angular
+feedback and body-height error, limits foot-height correction to `6 mm`,
+joint correction to `0.03 rad`, correction rate to `0.5 rad/s`, and applies a
+`0.20` low-pass factor. Swing legs receive no VMC correction.
+
+Run and record each stage:
+
+```bash
+./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-SmallHighFreq-Stage0-Reference-v0 \
+  --num_envs 1 --duration 60
+
+./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-SmallHighFreq-Stage1-Reference-v0 \
+  --num_envs 1 --duration 60
+
+./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-SmallHighFreq-Stage2-Reference-v0 \
+  --num_envs 1 --duration 60
+```
+
+`SmallHighFreq-Reference-v0` is a Stage-1 alias. CSV output defaults to a
+task-specific file under `logs/reference_debug/`, so Stage 0/1/2 runs do not
+overwrite one another. It includes stage, gait parameters,
+swing/stance masks, `q_cpg`, `q_vmc_delta`, `q_ref`, every safety-chain target,
+`q_final`, `q_actual`, errors, attitude, angular velocity, estimated torque,
+predicted foot lift, actual world foot height, and every clamp mask.
+
+Do not start residual learning until Stage 0 has correct leg order, continuous
+lift/touchdown and stable tripod support, Stage 1 tracks without persistent
+clipping or torque above the normal budget, and Stage 2 only makes small
+posture improvements. If Stage 0 is unstable, tune stride, swing height,
+duty factor, support preload and stand pose before touching VMC.
+
+The future training entry point is registered but is not run by reference
+validation:
+
+```bash
+./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/train.py \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-SmallHighFreq-v0 \
+  --num_envs 64 --max_iterations 1000
+
+./isaaclab.sh -p scripts/reinforcement_learning/rsl_rl/train.py \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-SmallHighFreq-v0 \
+  --num_envs 1024 --max_iterations 9000 --headless
+```
+
 This task uses the existing 7.24 kg Fanfan asset. The actor outputs a 12-DoF
 residual around `FanfanReferenceGait`; it never outputs absolute motor targets.
 Play and Reference-only use a `0.15 m/s` command so the reference generator

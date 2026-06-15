@@ -18,7 +18,9 @@ from . import mdp_observations as wave_obs
 from . import mdp_rewards as wave_rew
 from .curriculum import WAVE_CURRICULUM_STAGES, stage_gated_push, wave_curriculum
 from .joint_semantics import SIM_JOINT_NAMES
+from .reference_gait import FanfanSmallHighFreqReferenceGaitCfg
 from .residual_action import WaveResidualJointPositionActionCfg
+from .urdf_model import make_heavy_fanfan_cfg
 
 
 JOINT_NAMES = list(SIM_JOINT_NAMES)
@@ -28,6 +30,7 @@ FOOT_CFG = SceneEntityCfg(
     preserve_order=True,
 )
 JOINT_CFG = SceneEntityCfg("robot", joint_names=JOINT_NAMES, preserve_order=True)
+HEAVY_FANFAN_CFG, HEAVY_FANFAN_MODEL = make_heavy_fanfan_cfg()
 
 
 @configclass
@@ -84,6 +87,7 @@ class WaveObservationsCfg:
 class FanfanRlCpgResidualFlatEnvCfg(FanfanA1CleanFlatEnvCfg):
     def __post_init__(self):
         super().__post_init__()
+        self.scene.robot = HEAVY_FANFAN_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
         self.actions.joint_pos = WaveResidualJointPositionActionCfg(
             asset_name="robot",
@@ -323,3 +327,86 @@ class FanfanRlCpgResidualCsvPlaybackEnvCfg(FanfanRlCpgResidualReferenceRawEnvCfg
         super().__post_init__()
         self.actions.joint_pos.action_mode = "csv_playback"
         self.commands.base_velocity.ranges.lin_vel_x = (0.0, 0.0)
+
+
+@configclass
+class FanfanRlCpgResidualSmallHighFreqEnvCfg(FanfanRlCpgResidualFlatEnvCfg):
+    """Dormant residual-training entry point using the small high-frequency reference."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.actions.joint_pos.reference_cfg = FanfanSmallHighFreqReferenceGaitCfg(
+            thigh_length=HEAVY_FANFAN_MODEL.thigh_length_m,
+            calf_length=HEAVY_FANFAN_MODEL.calf_length_m,
+        )
+
+
+@configclass
+class FanfanRlCpgResidualSmallHighFreqReferenceEnvCfg(FanfanRlCpgResidualReferenceRawEnvCfg):
+    """Deterministic small high-frequency reference task with Stage-1 safety."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.actions.joint_pos.action_mode = "reference_stage"
+        self.actions.joint_pos.reference_cfg = FanfanSmallHighFreqReferenceGaitCfg(
+            thigh_length=HEAVY_FANFAN_MODEL.thigh_length_m,
+            calf_length=HEAVY_FANFAN_MODEL.calf_length_m,
+        )
+        self.actions.joint_pos.control_stage = 1
+        self.actions.joint_pos.enable_vmc = False
+        self.actions.joint_pos.vmc_mode = "off"
+        self.actions.joint_pos.enable_deploy_target_filter = True
+        self.actions.joint_pos.enable_target_rate_limit = True
+        self.actions.joint_pos.enable_target_accel_limit = True
+        self.actions.joint_pos.enable_torque_target_limit = True
+        self.actions.joint_pos.enable_action_delay = False
+        self.actions.joint_pos.fixed_delay_steps = 0
+        self.actions.joint_pos.sim_target_rate_limit_range = (2.1, 2.1)
+        self.actions.joint_pos.sim_target_accel_limit_range = (100.0, 100.0)
+        self.actions.joint_pos.sim_torque_budget_range = (6.0, 6.0)
+        self.actions.joint_pos.sim_short_peak_torque_range = (6.0, 6.0)
+        self.actions.joint_pos.sim_short_peak_prob = 0.0
+        self.actions.joint_pos.sim_motor_strength_scale_range = (1.0, 1.0)
+        self.actions.joint_pos.sim_kp_scale_range = (1.0, 1.0)
+        self.actions.joint_pos.sim_kd_scale_range = (1.0, 1.0)
+        self.actions.joint_pos.hip_err_limit_mul = 1.0
+        self.actions.joint_pos.thigh_err_limit_mul = 1.0
+        self.actions.joint_pos.calf_err_limit_mul = 1.0
+        self.actions.joint_pos.hip_target_rate_mul = 1.0
+        self.actions.joint_pos.thigh_target_rate_mul = 1.0
+        self.actions.joint_pos.calf_target_rate_mul = 1.0
+        self.actions.joint_pos.hip_target_accel_mul = 1.0
+        self.actions.joint_pos.thigh_target_accel_mul = 1.0
+        self.actions.joint_pos.calf_target_accel_mul = 1.0
+        self.actions.joint_pos.clip = None
+
+
+@configclass
+class FanfanRlCpgResidualSmallHighFreqStage0ReferenceEnvCfg(
+    FanfanRlCpgResidualSmallHighFreqReferenceEnvCfg
+):
+    def __post_init__(self):
+        super().__post_init__()
+        self.actions.joint_pos.control_stage = 0
+        self.actions.joint_pos.enable_deploy_target_filter = False
+        self.actions.joint_pos.enable_target_rate_limit = False
+        self.actions.joint_pos.enable_target_accel_limit = False
+        self.actions.joint_pos.enable_torque_target_limit = False
+
+
+@configclass
+class FanfanRlCpgResidualSmallHighFreqStage1ReferenceEnvCfg(
+    FanfanRlCpgResidualSmallHighFreqReferenceEnvCfg
+):
+    pass
+
+
+@configclass
+class FanfanRlCpgResidualSmallHighFreqStage2ReferenceEnvCfg(
+    FanfanRlCpgResidualSmallHighFreqReferenceEnvCfg
+):
+    def __post_init__(self):
+        super().__post_init__()
+        self.actions.joint_pos.control_stage = 2
+        self.actions.joint_pos.enable_vmc = True
+        self.actions.joint_pos.vmc_mode = "light"

@@ -34,6 +34,7 @@ gait_mod = load("reference_gait")
 residual_mod = load("residual_math")
 profiles_mod = load("curriculum_profiles")
 csv_mod = load("csv_playback")
+urdf_mod = load("urdf_model")
 
 
 def make_gait(num_envs=8, dt=0.02):
@@ -41,6 +42,21 @@ def make_gait(num_envs=8, dt=0.02):
     return gait_mod.FanfanReferenceGait(
         gait_mod.FanfanReferenceGaitCfg(), num_envs, "cpu", dt, default
     )
+
+
+def make_small_gait(num_envs=1, dt=0.02):
+    default = torch.tensor([
+        -0.1571, 0.3491, -0.7854,
+        0.1571, 0.3491, -0.7854,
+        -0.1571, 0.2269, -0.3491,
+        0.1571, 0.2269, -0.3491,
+    ]).repeat(num_envs, 1)
+    model = urdf_mod.load_fanfan_urdf_model()
+    cfg = gait_mod.FanfanSmallHighFreqReferenceGaitCfg(
+        thigh_length=model.thigh_length_m,
+        calf_length=model.calf_length_m,
+    )
+    return gait_mod.FanfanReferenceGait(cfg, num_envs, "cpu", dt, default)
 
 
 def test_smooth_gate():
@@ -94,9 +110,97 @@ def test_phase_uses_control_dt():
 
 
 def test_reference_hip_semantics_match_real_node():
-    assert gait_mod.REFERENCE_HIP_OUTWARD_SIGNS == (1.0, 1.0, -1.0, 1.0)
+    assert gait_mod.LEGACY_REFERENCE_HIP_OUTWARD_SIGNS == (1.0, 1.0, -1.0, 1.0)
+    assert gait_mod.URDF_HIP_OUTWARD_SIGNS == (-1.0, 1.0, -1.0, 1.0)
     expected_swing_delta_signs = (-1.0, -1.0, 1.0, -1.0)
-    assert tuple(-value for value in gait_mod.REFERENCE_HIP_OUTWARD_SIGNS) == expected_swing_delta_signs
+    assert tuple(-value for value in gait_mod.LEGACY_REFERENCE_HIP_OUTWARD_SIGNS) == expected_swing_delta_signs
+
+
+def test_heavy_urdf_structure_and_default_fk():
+    model = urdf_mod.load_fanfan_urdf_model()
+    urdf_mod.validate_fanfan_urdf(model)
+    assert abs(model.total_mass_kg - 7.242158331537168) < 1.0e-9
+    assert abs(model.trunk_mass_kg - 2.76230213761) < 1.0e-9
+    assert abs(model.thigh_length_m - 0.15606) < 1.0e-8
+    assert abs(model.calf_length_m - 0.148940918050628) < 1.0e-6
+    assert model.joint_order == semantics_mod.SIM_JOINT_NAMES
+
+    poses = {
+        "FR": (-0.1571, 0.3491, -0.7854),
+        "FL": (0.1571, 0.3491, -0.7854),
+        "RR": (-0.1571, 0.2269, -0.3491),
+        "RL": (0.1571, 0.2269, -0.3491),
+    }
+    expected = {
+        "FR": (0.199561, -0.163733, -0.265605),
+        "FL": (0.199561, 0.163733, -0.265605),
+        "RR": (-0.206952, -0.166589, -0.283634),
+        "RL": (-0.206952, 0.166589, -0.283634),
+    }
+    for leg, pose in poses.items():
+        actual = urdf_mod.forward_foot_position(model, leg, pose)
+        assert all(abs(value - target) < 2.0e-6 for value, target in zip(actual, expected[leg]))
+
+
+def test_small_high_frequency_defaults_and_continuity():
+    gait = make_small_gait(dt=0.02)
+    cfg = gait.cfg
+    assert cfg.step_hz == 0.82
+    assert cfg.stride_length == 0.026
+    assert cfg.swing_height == 0.062
+    assert cfg.duty_factor == 0.78
+    assert cfg.warmup_sec == 4.0
+    assert cfg.reference_rate_limit_rad_s == 10.0
+    assert cfg.apply_default_pose_offsets is False
+    assert torch.allclose(gait.default_joint_pos[0], torch.tensor([
+        -0.1571, 0.3491, -0.7854,
+        0.1571, 0.3491, -0.7854,
+        -0.1571, 0.2269, -0.3491,
+        0.1571, 0.2269, -0.3491,
+    ]))
+
+    command = torch.tensor([[0.15, 0.0, 0.0]])
+    previous = gait.get_q_ref().clone()
+    max_rate = 0.0
+    clipped_rate_steps = 0
+    seen = []
+    previous_active = None
+    for _ in range(round(12.0 / gait.dt)):
+        q_ref = gait.update(command)
+        rate = float(torch.max(torch.abs(q_ref - previous)) / gait.dt)
+        max_rate = max(max_rate, rate)
+        clipped_rate_steps += int(rate > 2.1)
+        previous = q_ref.clone()
+        active = gait.last_active_swing_one_hot[0]
+        assert int(active.sum()) <= 1
+        active_index = int(active.argmax()) if active.sum() else None
+        if active_index is not None and active_index != previous_active:
+            seen.append(gait_mod.LEG_ORDER[active_index])
+        previous_active = active_index
+
+    assert seen[:5] == ["RR", "FR", "RL", "FL", "RR"]
+    # The requested 62-67 mm lift at 0.82 Hz is not kinematically compatible
+    # with the deployment layer's 2.1 rad/s limit from this near-extended stand.
+    # The reference generator therefore stays below the RS01 rated-speed
+    # budget, while Stage 1 records how much its stricter limiter reshapes it.
+    assert clipped_rate_steps > 0
+    assert max_rate <= cfg.reference_rate_limit_rad_s + 1.0e-4
+    assert abs(1.0 / cfg.step_hz - 1.219512) < 1.0e-5
+
+    x, z = gait._forward_sagittal(gait.last_q_ref[:, 1::3], gait.last_q_ref[:, 2::3])
+    reach = torch.sqrt(x * x + z * z)
+    max_reach = cfg.thigh_length + cfg.calf_length
+    assert torch.all(reach <= max_reach - 0.0045)
+
+
+def test_small_high_frequency_parameter_ranges():
+    invalid = gait_mod.FanfanSmallHighFreqReferenceGaitCfg(step_hz=1.0)
+    try:
+        invalid.validate_parameters()
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Unsafe small-high-frequency step rate was accepted.")
 
 
 def test_csv_wide_policy_and_interpolation():
@@ -270,7 +374,7 @@ def test_active_foot_lifts_and_hip_direction():
             assert lift[leg_index] > torch.max(lift[support_indices])
             hip_index = leg_index * 3
             hip_delta = gait.last_q_ref[0, hip_index] - gait.default_joint_pos[0, hip_index]
-            expected_sign = -gait_mod.REFERENCE_HIP_OUTWARD_SIGNS[leg_index]
+            expected_sign = -cfg.hip_outward_signs[leg_index]
             assert float(hip_delta) * expected_sign > 0.0
             checked.add(leg_index)
         if len(checked) == 4:
@@ -320,12 +424,42 @@ def test_joint_mapping_active_and_rest_schedule():
     assert residual_mod.joint_mapping_index(1200, **kwargs) == 11
 
 
+def test_reference_stage_and_vmc_limits():
+    residual_mod.validate_reference_control_stage(0, False, "off")
+    residual_mod.validate_reference_control_stage(1, False, "off")
+    residual_mod.validate_reference_control_stage(2, True, "light")
+    residual_mod.validate_reference_control_stage(3, True, "full")
+    for invalid in ((0, True, "light"), (1, False, "full"), (2, False, "off")):
+        try:
+            residual_mod.validate_reference_control_stage(*invalid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"Invalid stage/VMC combination was accepted: {invalid}")
+
+    raw = torch.full((1, 12), 1.0)
+    previous = torch.zeros_like(raw)
+    filtered = residual_mod.filter_vmc_delta(
+        raw,
+        previous,
+        joint_limit_rad=0.03,
+        rate_limit_rad_s=0.5,
+        lowpass_alpha=0.20,
+        dt=0.02,
+    )
+    assert torch.all(torch.abs(filtered) <= 0.01 + 1.0e-7)
+    assert torch.all(torch.abs(filtered) <= 0.03 + 1.0e-7)
+
+
 if __name__ == "__main__":
     test_smooth_gate()
     test_shape_finite_and_warmup()
     test_big_stride_command_scaling_and_saturation()
     test_phase_uses_control_dt()
     test_reference_hip_semantics_match_real_node()
+    test_heavy_urdf_structure_and_default_fk()
+    test_small_high_frequency_defaults_and_continuity()
+    test_small_high_frequency_parameter_ranges()
     test_csv_wide_policy_and_interpolation()
     test_csv_wide_real_and_ros_long_form()
     test_csv_rejects_non_monotonic_time()
@@ -338,4 +472,5 @@ if __name__ == "__main__":
     test_residual_limit_and_filter()
     test_raw_joint_limit_clamp()
     test_joint_mapping_active_and_rest_schedule()
+    test_reference_stage_and_vmc_limits()
     print("Fanfan reference gait pure-Torch tests passed.")
