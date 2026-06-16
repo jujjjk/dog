@@ -135,6 +135,195 @@ both world foot height and foot height transformed into the Trunk frame,
 along with rear thigh/calf reference, command, position, error, and estimated
 torque.
 
+The free-base test uses a contact-force-gated state machine:
+
+```text
+DEFAULT_POSE -> PRE_SHIFT -> PRELOAD -> UNLOAD -> WAIT_FORCE_DROP -> LIFT
+```
+
+The measured RR unload naturally uses `FR+RL` as the support pair while
+`FL+RR` unload together. Therefore RR applies the default `15/15 mm` support
+push to `FR/RL`, not FL. RL mirrors this to the `FL+RR` support pair. The
+default target-leg unload is `12 mm`. RR uses body shift
+`x=+30 mm, y=+10 mm`; RL mirrors to `x=+30 mm, y=-10 mm`.
+`LIFT` starts only after target-foot force remains below `3 N` for `0.2 s`.
+If that does not happen within `1.0 s`, the state becomes `FAILED` with
+`failure_reason=force_drop_timeout` and never enters `LIFT`.
+
+Run the fixed-base diagnostic first:
+
+```bash
+./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-SmallHighFreq-RearLiftFixedBaseTest-v0 \
+  --num_envs 1 --duration 12 --rear_leg RR \
+  --output logs/reference_debug/rear_lift_fixed_RR.csv
+
+./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-SmallHighFreq-RearLiftFixedBaseTest-v0 \
+  --num_envs 1 --duration 12 --rear_leg RL \
+  --output logs/reference_debug/rear_lift_fixed_RL.csv
+```
+
+Then run the same RR/RL commands with `SmallHighFreq-RearLiftTest-v0` for the
+free-base comparison. The CSV additionally records base height/RPY, foot
+contact state, normal force, world/body foot height, per-leg support preload,
+and target-leg unload. Fixed-base world foot lift validates IK and semantics;
+free-base swing normal force near zero and at least `10 mm` world clearance
+validate support transfer.
+
+Before tuning that state machine, measure each leg's foot-z press sign:
+
+```bash
+./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-SmallHighFreq-PressSignTest-v0 \
+  --num_envs 1 --duration 17 \
+  --output logs/reference_debug/press_sign_test.csv
+```
+
+This applies `+10 mm` and `-10 mm` to each leg independently and prints
+`normal_force_before`, `normal_force_after`, and the inferred downward press
+sign. Pass the reported `FR,FL,RR,RL` signs to later tests with
+`--foot_down_signs=-1,-1,-1,-1`.
+
+Sweep body shift for RR and RL separately:
+
+```bash
+./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-SmallHighFreq-BodyShiftSweep-v0 \
+  --rear_leg RR --num_envs 1 --duration 39 \
+  --output logs/reference_debug/body_shift_sweep_RR.csv
+
+./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-SmallHighFreq-BodyShiftSweep-v0 \
+  --rear_leg RL --num_envs 1 --duration 39 \
+  --output logs/reference_debug/body_shift_sweep_RL.csv
+```
+
+The sweep covers `body_shift_x/y = -30...+30 mm`. The summary first rejects
+poses above 3 degrees roll/pitch, then minimizes target rear-foot force while
+increasing diagonal front-foot force.
+
+After sign and shift direction are confirmed, sweep unload and support Kp:
+
+```bash
+for unload in 0.012 0.018 0.024 0.030; do
+  for kp in mid high very_high; do
+    ./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
+      --task Isaac-Velocity-Flat-FanfanRlCpgResidual-SmallHighFreq-RearLiftTest-v0 \
+      --rear_leg RR --num_envs 1 --duration 8 \
+      --target_unload_z ${unload} \
+      --main_support_push_z 0.015 \
+      --front_support_push_z 0.015 \
+      --rear_support_push_z 0.015 \
+      --support_kp_level ${kp} \
+      --output logs/reference_debug/rear_lift_RR_unload_${unload}_kp_${kp}.csv
+  done
+done
+```
+
+Use `--rear_leg RL` for the mirrored sweep. Kp levels are `mid=140/160`,
+`high=180/200`, and `very_high=220/220` for support thigh/calf, with
+`Kd=5.0`. These are simulation-only sweeps; they do not enable RL or VMC and
+are not deployment gains.
+
+Run the mirrored RL confirmation with the same successful RR parameters:
+
+```bash
+./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-SmallHighFreq-RearLiftTest-v0 \
+  --rear_leg RL --num_envs 1 --duration 8 \
+  --target_unload_z 0.024 \
+  --main_support_push_z 0.018 \
+  --front_support_push_z 0.010 \
+  --rear_support_push_z 0.010 \
+  --support_kp_level high \
+  --output logs/reference_debug/rear_lift_RL_024_high.csv
+```
+
+Expected mirror behavior is `actual_support_pair=FL+RR`, target RL force near
+zero, and FR also tending to unload during the diagonal transition.
+
+## Fast diagonal trot reference
+
+`Isaac-Velocity-Flat-FanfanRlCpgResidual-FastDiagonalTrot-Reference-v0`
+is a reference-only diagonal gait. The default profile is conservative:
+
+```text
+Pair A = FR + RL
+Pair B = FL + RR
+step_hz = 1.10
+duty_factor = 0.62
+stride_length = 0.020 m
+front_swing_height = 0.045 m
+rear_swing_height = 0.065 m
+support_preload_z = -0.008 m
+warmup_sec = 2.0
+swing_lift_peak_phase = 0.45
+touchdown_phase = 0.82
+early_stance_blend = 0.12
+```
+
+It does not use crawl rear-lift force gates. Pair A swing commands FR/RL with
+swing trajectories while FL/RR receive pair-wise support preload; Pair B
+mirrors this. Rear swing height is higher than front swing height so RR/RL can
+clear the ground cleanly. The last 15% of the swing is touchdown/weight-transfer
+time, so the swing foot returns to ground before the pair fully becomes support.
+CSV includes `active_swing_pair`, `support_pair`, `actual_support_pair`, all
+four foot normal forces, foot world heights, base roll/pitch, q errors,
+estimated torques, and per-joint `kp_0..11` / `kd_0..11`.
+
+```bash
+./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-FastDiagonalTrot-Reference-v0 \
+  --num_envs 1 --duration 20 \
+  --trot_preset conservative \
+  --support_kp_level high \
+  --output logs/reference_debug/fast_diagonal_trot_conservative_v2.csv
+```
+
+The balanced profile is:
+
+```text
+step_hz = 1.15
+duty_factor = 0.61
+stride_length = 0.022 m
+front_swing_height = 0.048 m
+rear_swing_height = 0.067 m
+support_preload_z = -0.009 m
+```
+
+```bash
+./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-FastDiagonalTrot-Reference-v0 \
+  --num_envs 1 --duration 20 \
+  --trot_preset balanced \
+  --support_kp_level high \
+  --output logs/reference_debug/fast_diagonal_trot_balanced_v2.csv
+```
+
+The fast profile is for simulation stress testing only:
+
+```text
+step_hz = 1.20
+duty_factor = 0.60
+stride_length = 0.024 m
+front_swing_height = 0.050 m
+rear_swing_height = 0.070 m
+support_preload_z = -0.010 m
+```
+
+```bash
+./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-FastDiagonalTrot-Reference-v0 \
+  --num_envs 1 --duration 20 \
+  --trot_preset fast \
+  --support_kp_level high \
+  --output logs/reference_debug/fast_diagonal_trot_fast_v2.csv
+```
+
+You can also sweep only preload with
+`--fast_trot_support_preload_z 0.006`, `0.008`, or `0.010`.
+
 The future training entry point is registered but is not run by reference
 validation:
 

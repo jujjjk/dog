@@ -567,6 +567,19 @@ def test_reference_stage_and_vmc_limits():
     assert torch.all(torch.abs(filtered) <= 0.03 + 1.0e-7)
 
 
+def test_rear_lift_three_stage_profile():
+    profile = residual_mod.rear_lift_phase_profile
+    assert profile(0.0, settle_sec=1.5, preload_sec=0.75, cycle_sec=2.0) == (0, 0.0, 0.0)
+    phase, preload, lift = profile(1.875, settle_sec=1.5, preload_sec=0.75, cycle_sec=2.0)
+    assert phase == 1
+    assert 0.45 < preload < 0.55
+    assert lift == 0.0
+    phase, preload, lift = profile(2.25, settle_sec=1.5, preload_sec=0.75, cycle_sec=2.0)
+    assert phase == 2 and preload == 1.0 and lift == 0.0
+    phase, preload, lift = profile(3.25, settle_sec=1.5, preload_sec=0.75, cycle_sec=2.0)
+    assert phase == 2 and preload == 1.0 and abs(lift - 1.0) < 1.0e-7
+
+
 if __name__ == "__main__":
     test_smooth_gate()
     test_shape_finite_and_warmup()
@@ -594,4 +607,5 @@ if __name__ == "__main__":
     test_raw_joint_limit_clamp()
     test_joint_mapping_active_and_rest_schedule()
     test_reference_stage_and_vmc_limits()
+    test_rear_lift_three_stage_profile()
     print("Fanfan reference gait pure-Torch tests passed.")

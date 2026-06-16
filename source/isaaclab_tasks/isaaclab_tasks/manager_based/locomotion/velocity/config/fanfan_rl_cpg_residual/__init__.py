@@ -72,6 +72,10 @@ _SMALL_HIGH_FREQ_REFERENCE_TASKS = {
     "SmallHighFreq-Stage1-Debug-Reference": "FanfanRlCpgResidualSmallHighFreqStage1DebugReferenceEnvCfg",
     "SmallHighFreq-Stage1-Safe-Reference": "FanfanRlCpgResidualSmallHighFreqStage1SafeReferenceEnvCfg",
     "SmallHighFreq-RearLiftTest": "FanfanRlCpgResidualRearLiftTestEnvCfg",
+    "SmallHighFreq-RearLiftFixedBaseTest": "FanfanRlCpgResidualRearLiftFixedBaseTestEnvCfg",
+    "SmallHighFreq-PressSignTest": "FanfanRlCpgResidualPressSignTestEnvCfg",
+    "SmallHighFreq-BodyShiftSweep": "FanfanRlCpgResidualBodyShiftSweepEnvCfg",
+    "FastDiagonalTrot-Reference": "FanfanRlCpgResidualFastDiagonalTrotReferenceEnvCfg",
     "SmallHighFreq-Stage2-Reference": "FanfanRlCpgResidualSmallHighFreqStage2ReferenceEnvCfg",
 }
 

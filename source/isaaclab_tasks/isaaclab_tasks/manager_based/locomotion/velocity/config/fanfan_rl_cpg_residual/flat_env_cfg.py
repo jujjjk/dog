@@ -464,6 +464,64 @@ class FanfanRlCpgResidualRearLiftTestEnvCfg(
 
 
 @configclass
+class FanfanRlCpgResidualPressSignTestEnvCfg(
+    FanfanRlCpgResidualSmallHighFreqStage0ReferenceEnvCfg
+):
+    """Measure the contact-force response to +/-10 mm foot-z commands."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.actions.joint_pos.action_mode = "press_sign_test"
+        self.commands.base_velocity.ranges.lin_vel_x = (0.0, 0.0)
+
+
+@configclass
+class FanfanRlCpgResidualBodyShiftSweepEnvCfg(
+    FanfanRlCpgResidualSmallHighFreqStage0ReferenceEnvCfg
+):
+    """Sweep body x/y shifts while holding all four feet in stance."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.actions.joint_pos.action_mode = "body_shift_sweep"
+        self.commands.base_velocity.ranges.lin_vel_x = (0.0, 0.0)
+
+
+@configclass
+class FanfanRlCpgResidualRearLiftFixedBaseTestEnvCfg(
+    FanfanRlCpgResidualRearLiftTestEnvCfg
+):
+    """Fixed-Trunk rear lift test that isolates IK and joint semantics."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.robot.spawn.fix_base = True
+        self.scene.robot.spawn.usd_file_name = (
+            "fanfan_mass_scaled_only_trunk_plus_800g_fixed_base.usd"
+        )
+        self.scene.robot.spawn.articulation_props.fix_root_link = True
+        self.actions.joint_pos.rear_lift_diagonal_front_preload_m = 0.0
+        self.actions.joint_pos.rear_lift_same_front_preload_m = 0.0
+        self.actions.joint_pos.rear_lift_other_rear_preload_m = 0.0
+        self.actions.joint_pos.rear_lift_target_unload_m = 0.0
+        self.actions.joint_pos.rear_lift_body_shift_x_m = 0.0
+        self.actions.joint_pos.rear_lift_body_shift_y_m = 0.0
+        self.actions.joint_pos.rear_lift_force_drop_threshold_n = 1.0e9
+
+
+@configclass
+class FanfanRlCpgResidualFastDiagonalTrotReferenceEnvCfg(
+    FanfanRlCpgResidualSmallHighFreqStage0ReferenceEnvCfg
+):
+    """Reference-only diagonal trot that uses FR+RL and FL+RR swing pairs."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.actions.joint_pos.action_mode = "fast_diagonal_trot"
+        self.commands.base_velocity.ranges.lin_vel_x = (0.0, 0.0)
+
+
+@configclass
 class FanfanRlCpgResidualSmallHighFreqStage2ReferenceEnvCfg(
     FanfanRlCpgResidualSmallHighFreqReferenceEnvCfg
 ):

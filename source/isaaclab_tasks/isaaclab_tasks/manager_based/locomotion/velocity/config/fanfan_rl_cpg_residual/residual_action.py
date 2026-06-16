@@ -7,7 +7,7 @@ from typing import Protocol
 import torch
 
 from isaaclab.utils import configclass
-from isaaclab.utils.math import quat_rotate_inverse
+from isaaclab.utils.math import euler_xyz_from_quat, quat_rotate_inverse
 
 from isaaclab_tasks.manager_based.locomotion.velocity.config.fanfan_a1_clean.deploy_actions import (
     DeployFilteredJointPositionAction,
@@ -79,6 +79,74 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
         if tuple(resolved_trunk_names) != ("Trunk",):
             raise ValueError(f"Unexpected Fanfan trunk body: {resolved_trunk_names}")
         self._rear_lift_step = 0
+        self.last_rear_lift_phase = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.long
+        )
+        self.last_support_preload_delta_z = torch.zeros(
+            self.num_envs, 4, device=self.device
+        )
+        self.last_target_leg_unload_delta_z = torch.zeros(
+            self.num_envs, device=self.device
+        )
+        self._rear_lift_state_step = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.long
+        )
+        self._rear_lift_force_drop_steps = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.long
+        )
+        self.last_force_drop_success = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.bool
+        )
+        self.last_failure_reason = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.long
+        )
+        self.last_force_below_threshold = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.bool
+        )
+        self.last_force_below_timer = torch.zeros(
+            self.num_envs, device=self.device
+        )
+        self.last_first_force_drop_time = torch.full(
+            (self.num_envs,), -1.0, device=self.device
+        )
+        self.last_lift_entry_time = torch.full(
+            (self.num_envs,), -1.0, device=self.device
+        )
+        self.last_missed_force_drop_window = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.bool
+        )
+        self.last_state_transition_reason = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.long
+        )
+        self.last_active_swing_pair = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.long
+        )
+        self.last_expected_support_pair = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.long
+        )
+        self.last_debug_kp = torch.full_like(
+            self.processed_actions, max(float(cfg.sim_kp), 1.0e-6)
+        )
+        self.last_debug_kd = torch.full_like(
+            self.processed_actions, max(float(cfg.sim_kd), 0.0)
+        )
+        self.last_body_shift_xy = torch.zeros(self.num_envs, 2, device=self.device)
+        self.last_diagnostic_leg = torch.full(
+            (self.num_envs,), -1, device=self.device, dtype=torch.long
+        )
+        self.last_diagnostic_delta_z = torch.zeros(self.num_envs, device=self.device)
+        self.last_diagnostic_force_before = torch.zeros(
+            self.num_envs, device=self.device
+        )
+        self.last_diagnostic_force_after = torch.zeros(
+            self.num_envs, device=self.device
+        )
+        contact_sensor = self._env.scene.sensors["contact_forces"]
+        self._contact_foot_ids, contact_foot_names = contact_sensor.find_bodies(
+            ["FR_foot", "FL_foot", "RR_foot", "RL_foot"], preserve_order=True
+        )
+        if tuple(contact_foot_names) != ("FR_foot", "FL_foot", "RR_foot", "RL_foot"):
+            raise ValueError(f"Unexpected contact-sensor foot order: {contact_foot_names}")
         self._validate_control_stage()
         self._residual_scale = self._make_residual_scale()
         self._filtered_residual = torch.zeros_like(self.processed_actions)
@@ -100,6 +168,8 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
         self.last_q_before_delay = self.last_q_ref.clone()
         self.last_q_after_delay = self.last_q_ref.clone()
         self.last_tau_est = torch.zeros_like(self.processed_actions)
+        self.debug_kp_override: torch.Tensor | None = None
+        self.debug_kd_override: torch.Tensor | None = None
         self.last_joint_limit_clip_mask = torch.zeros_like(self.processed_actions, dtype=torch.bool)
         self.last_rate_clip_mask = torch.zeros_like(self.processed_actions, dtype=torch.bool)
         self.last_accel_clip_mask = torch.zeros_like(self.processed_actions, dtype=torch.bool)
@@ -157,6 +227,34 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
 
     def _commands(self) -> torch.Tensor:
         return self._env.command_manager.get_command(self.cfg.command_name)
+
+    def _foot_normal_forces(self) -> torch.Tensor:
+        contact_sensor = self._env.scene.sensors["contact_forces"]
+        return torch.norm(
+            contact_sensor.data.net_forces_w[:, self._contact_foot_ids, :], dim=-1
+        )
+
+    def _foot_target_to_policy(
+        self,
+        q_policy: torch.Tensor,
+        *,
+        foot_x_delta: torch.Tensor | None = None,
+        foot_z_delta: torch.Tensor | None = None,
+        body_shift_y: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Apply body-frame foot deltas to a policy-order stand target."""
+        thigh = q_policy[:, 1::3]
+        calf = q_policy[:, 2::3]
+        x_default, z_default = self.reference._forward_sagittal(thigh, calf)
+        x_target = x_default if foot_x_delta is None else x_default + foot_x_delta
+        z_target = z_default if foot_z_delta is None else z_default + foot_z_delta
+        thigh_target, calf_target = self.reference._inverse_sagittal(x_target, z_target)
+        q_policy[:, 1::3] = thigh_target
+        q_policy[:, 2::3] = calf_target
+        if body_shift_y is not None:
+            leg_length = torch.clamp(torch.abs(z_default), min=0.15)
+            q_policy[:, 0::3] += -body_shift_y.unsqueeze(1) / leg_length
+        return q_policy
 
     @staticmethod
     def _roll_pitch_from_quat(quat_wxyz: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -241,8 +339,14 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
     def _estimate_pd_torque(self, q_target: torch.Tensor) -> None:
         q_current = self._asset.data.joint_pos[:, self._joint_ids]
         qd_current = self._asset.data.joint_vel[:, self._joint_ids]
-        kp_eff = max(float(self.cfg.sim_kp), 1.0e-6) * self._kp_scale * self._motor_strength
-        kd_eff = max(float(self.cfg.sim_kd), 0.0) * self._kd_scale * self._motor_strength
+        if self.debug_kp_override is None:
+            kp_eff = max(float(self.cfg.sim_kp), 1.0e-6) * self._kp_scale * self._motor_strength
+        else:
+            kp_eff = self.debug_kp_override
+        if self.debug_kd_override is None:
+            kd_eff = max(float(self.cfg.sim_kd), 0.0) * self._kd_scale * self._motor_strength
+        else:
+            kd_eff = self.debug_kd_override
         self.last_tau_est[:] = kp_eff * (q_target - q_current) - kd_eff * qd_current
 
     def _record_raw_target_rate(self, q_target: torch.Tensor) -> None:
@@ -340,47 +444,158 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
         q_policy[:, leg_index * 3 + 1] = float(self.cfg.rear_lift_test_thigh)
         q_policy[:, leg_index * 3 + 2] = float(self.cfg.rear_lift_test_calf)
 
-        elapsed = self._rear_lift_step * float(self._env.step_dt)
-        settle = max(0.0, float(self.cfg.rear_lift_test_settle_sec))
-        cycle = max(0.5, float(self.cfg.rear_lift_test_cycle_sec))
-        if elapsed >= settle:
-            phase = ((elapsed - settle) % cycle) / cycle
-            if phase < 0.5:
-                lift_progress = self.reference._smootherstep01(
-                    torch.full(
-                        (self.num_envs,),
-                        phase * 2.0,
-                        device=self.device,
-                        dtype=q_policy.dtype,
-                    )
-                )
-            else:
-                lift_progress = 1.0 - self.reference._smootherstep01(
-                    torch.full(
-                        (self.num_envs,),
-                        (phase - 0.5) * 2.0,
-                        device=self.device,
-                        dtype=q_policy.dtype,
-                    )
-                )
-        else:
-            lift_progress = torch.zeros(self.num_envs, device=self.device, dtype=q_policy.dtype)
-
-        thigh_default = q_policy[:, leg_index * 3 + 1]
-        calf_default = q_policy[:, leg_index * 3 + 2]
-        x_default, z_default = self.reference._forward_sagittal(
-            thigh_default.unsqueeze(1), calf_default.unsqueeze(1)
+        dt = float(self._env.step_dt)
+        state = self.last_rear_lift_phase
+        state_step = self._rear_lift_state_step
+        target_force = self._foot_normal_forces()[:, leg_index]
+        elapsed = self._rear_lift_step * dt
+        self.last_state_transition_reason.zero_()
+        timed_durations = (
+            float(self.cfg.rear_lift_test_settle_sec),
+            float(self.cfg.rear_lift_pre_shift_sec),
+            float(self.cfg.rear_lift_test_preload_sec),
         )
-        z_target = z_default + float(self.cfg.rear_lift_test_height_m) * lift_progress.unsqueeze(1)
-        thigh_target, calf_target = self.reference._inverse_sagittal(x_default, z_target)
-        q_policy[:, leg_index * 3 + 1] = thigh_target[:, 0]
-        q_policy[:, leg_index * 3 + 2] = calf_target[:, 0]
+        for phase_id, duration in enumerate(timed_durations):
+            advance = (state == phase_id) & (state_step * dt >= max(dt, duration))
+            state[advance] += 1
+            state_step[advance] = 0
+            self.last_state_transition_reason[advance] = phase_id + 1
+
+        force_low = target_force < float(self.cfg.rear_lift_force_drop_threshold_n)
+        monitor_force = (state == 3) | (state == 4)
+        previous_force_drop_steps = self._rear_lift_force_drop_steps.clone()
+        first_drop = (
+            monitor_force
+            & force_low
+            & (self.last_first_force_drop_time < 0.0)
+        )
+        self.last_first_force_drop_time[first_drop] = elapsed
+        missed_window = (
+            monitor_force
+            & ~force_low
+            & (previous_force_drop_steps > 0)
+            & ~self.last_force_drop_success
+        )
+        self.last_missed_force_drop_window |= missed_window
+        self._rear_lift_force_drop_steps = torch.where(
+            monitor_force & force_low,
+            self._rear_lift_force_drop_steps + 1,
+            torch.where(
+                monitor_force,
+                torch.zeros_like(self._rear_lift_force_drop_steps),
+                self._rear_lift_force_drop_steps,
+            ),
+        )
+        self.last_force_below_threshold[:] = force_low
+        self.last_force_below_timer[:] = (
+            self._rear_lift_force_drop_steps.to(q_policy.dtype) * dt
+        )
+        confirm_steps = max(
+            1, round(float(self.cfg.rear_lift_force_confirm_sec) / dt)
+        )
+        start_lift = monitor_force & (
+            self._rear_lift_force_drop_steps >= confirm_steps
+        )
+        lift_from_unload = start_lift & (state == 3)
+        lift_from_wait = start_lift & (state == 4)
+        self.last_force_drop_success[start_lift] = True
+        self.last_lift_entry_time[start_lift] = elapsed
+        self.last_state_transition_reason[lift_from_unload] = 5
+        self.last_state_transition_reason[lift_from_wait] = 6
+        state[start_lift] = 5
+        state_step[start_lift] = 0
+
+        unload_complete = (state == 3) & ~start_lift & (
+            state_step * dt >= max(dt, float(self.cfg.rear_lift_unload_sec))
+        )
+        state[unload_complete] = 4
+        state_step[unload_complete] = 0
+        self.last_state_transition_reason[unload_complete] = 4
+
+        wait_timeout = (state == 4) & (
+            state_step * dt >= float(self.cfg.rear_lift_force_drop_timeout_sec)
+        )
+        self.last_failure_reason[wait_timeout] = 1
+        self.last_state_transition_reason[wait_timeout] = 7
+        state[wait_timeout] = 6
+        state_step[wait_timeout] = 0
+
+        def smooth_state_progress(duration: float) -> torch.Tensor:
+            progress = torch.clamp(
+                state_step.to(q_policy.dtype) * dt / max(dt, duration), 0.0, 1.0
+            )
+            return progress**3 * (progress * (progress * 6.0 - 15.0) + 10.0)
+
+        shift_progress = smooth_state_progress(float(self.cfg.rear_lift_pre_shift_sec))
+        preload_progress = smooth_state_progress(float(self.cfg.rear_lift_test_preload_sec))
+        unload_progress = smooth_state_progress(float(self.cfg.rear_lift_unload_sec))
+        shift_gate = torch.where(
+            state > 1, torch.ones_like(shift_progress), torch.where(state == 1, shift_progress, 0.0)
+        )
+        preload_gate = torch.where(
+            state > 2,
+            torch.ones_like(preload_progress),
+            torch.where(state == 2, preload_progress, 0.0),
+        )
+        unload_gate = torch.where(
+            state > 3,
+            torch.ones_like(unload_progress),
+            torch.where(state == 3, unload_progress, 0.0),
+        )
+        cycle = max(0.5, float(self.cfg.rear_lift_test_cycle_sec))
+        lift_phase = torch.remainder(state_step.to(q_policy.dtype) * dt / cycle, 1.0)
+        triangle = torch.where(
+            lift_phase < 0.5, 2.0 * lift_phase, 2.0 * (1.0 - lift_phase)
+        )
+        lift_progress = triangle**3 * (
+            triangle * (triangle * 6.0 - 15.0) + 10.0
+        )
+        lift_progress *= (state == 5).to(q_policy.dtype)
+
+        shift_x = float(self.cfg.rear_lift_body_shift_x_m) * shift_gate
+        shift_y = (
+            (1.0 if leg == "RR" else -1.0)
+            * float(self.cfg.rear_lift_body_shift_y_m)
+            * shift_gate
+        )
+        self.last_body_shift_xy[:, 0] = shift_x
+        self.last_body_shift_xy[:, 1] = shift_y
+        support_preload = torch.zeros(self.num_envs, 4, device=self.device, dtype=q_policy.dtype)
+        if leg == "RR":
+            support_preload[:, 0] = float(self.cfg.rear_lift_same_front_preload_m)
+            support_preload[:, 1] = float(self.cfg.rear_lift_diagonal_front_preload_m)
+            support_preload[:, 3] = float(self.cfg.rear_lift_other_rear_preload_m)
+        else:
+            support_preload[:, 0] = float(self.cfg.rear_lift_diagonal_front_preload_m)
+            support_preload[:, 1] = float(self.cfg.rear_lift_same_front_preload_m)
+            support_preload[:, 2] = float(self.cfg.rear_lift_other_rear_preload_m)
+        down_signs = torch.tensor(
+            self.cfg.rear_lift_foot_down_signs,
+            device=self.device,
+            dtype=q_policy.dtype,
+        )
+        support_preload *= down_signs.unsqueeze(0)
+        support_preload *= preload_gate.unsqueeze(1)
+        unload_delta = float(self.cfg.rear_lift_target_unload_m) * unload_gate
+
+        default_thigh = q_policy[:, 1::3]
+        default_calf = q_policy[:, 2::3]
+        x_default, z_default = self.reference._forward_sagittal(default_thigh, default_calf)
+        x_target = x_default - shift_x.unsqueeze(1)
+        z_target = z_default + support_preload
+        z_target[:, leg_index] += unload_delta
+        z_target[:, leg_index] += (
+            float(self.cfg.rear_lift_test_height_m) * lift_progress
+        )
+        thigh_target, calf_target = self.reference._inverse_sagittal(x_target, z_target)
+        q_policy[:, 1::3] = thigh_target
+        q_policy[:, 2::3] = calf_target
+        leg_length = torch.clamp(torch.abs(z_default), min=0.15)
+        q_policy[:, 0::3] += -shift_y.unsqueeze(1) / leg_length
 
         self.reference.last_q_ref[:] = q_policy
         self.reference.last_leg_phase.zero_()
-        self.reference.last_leg_phase[:, leg_index] = torch.remainder(
-            torch.tensor(elapsed / cycle, device=self.device, dtype=q_policy.dtype), 1.0
-        )
+        self.reference.last_leg_phase[:, leg_index] = lift_phase
         self.reference.last_swing_mask.zero_()
         self.reference.last_swing_mask[:, leg_index] = lift_progress > 1.0e-5
         self.reference.last_active_swing_one_hot.zero_()
@@ -392,14 +607,268 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
         ).to(q_policy.dtype)
         self.reference.last_preload_gate.zero_()
         self.reference.last_post_touchdown_gate.zero_()
+        self.last_support_preload_delta_z[:] = support_preload
+        self.last_target_leg_unload_delta_z[:] = unload_delta
         self.reference.last_predicted_foot_z = self.reference._forward_sagittal(
             q_policy[:, 1::3], q_policy[:, 2::3]
         )[1]
         self.reference.last_predicted_foot_lift = (
             self.reference.last_predicted_foot_z - self.reference.default_foot_z
         )
+        self._rear_lift_state_step += 1
         self._rear_lift_step += 1
         return q_policy
+
+    def _set_diagnostic_reference(self, q_policy: torch.Tensor) -> None:
+        self.reference.last_q_ref[:] = q_policy
+        self.reference.last_leg_phase.zero_()
+        self.reference.last_swing_mask.zero_()
+        self.reference.last_active_swing_one_hot.zero_()
+        self.reference.last_support_gate.fill_(1.0)
+        self.reference.last_preload_gate.zero_()
+        self.reference.last_post_touchdown_gate.zero_()
+        self.reference.last_predicted_foot_z = self.reference._forward_sagittal(
+            q_policy[:, 1::3], q_policy[:, 2::3]
+        )[1]
+        self.reference.last_predicted_foot_lift = (
+            self.reference.last_predicted_foot_z - self.reference.default_foot_z
+        )
+
+    def _press_sign_test_target(self) -> torch.Tensor:
+        q_policy = self.reference.default_joint_pos.clone()
+        dt = float(self._env.step_dt)
+        segment = max(
+            2.0 * dt,
+            float(self.cfg.press_sign_rest_sec) + float(self.cfg.press_sign_hold_sec),
+        )
+        elapsed = self._rear_lift_step * dt
+        test_index = min(7, int(elapsed / segment))
+        segment_time = elapsed - test_index * segment
+        leg_index = test_index // 2
+        sign = 1.0 if test_index % 2 == 0 else -1.0
+        applying = segment_time >= float(self.cfg.press_sign_rest_sec)
+        delta = sign * float(self.cfg.press_sign_delta_m) if applying else 0.0
+        forces = self._foot_normal_forces()
+        if not applying:
+            self.last_diagnostic_force_before[:] = forces[:, leg_index]
+        self.last_diagnostic_leg.fill_(leg_index)
+        self.last_diagnostic_delta_z.fill_(delta)
+        self.last_diagnostic_force_after[:] = forces[:, leg_index]
+        foot_z_delta = torch.zeros(self.num_envs, 4, device=self.device)
+        foot_z_delta[:, leg_index] = delta
+        q_policy = self._foot_target_to_policy(q_policy, foot_z_delta=foot_z_delta)
+        self._set_diagnostic_reference(q_policy)
+        self._rear_lift_step += 1
+        return q_policy
+
+    def _body_shift_sweep_target(self) -> torch.Tensor:
+        q_policy = self.reference.default_joint_pos.clone()
+        dt = float(self._env.step_dt)
+        elapsed = self._rear_lift_step * dt
+        settle = max(0.0, float(self.cfg.body_shift_sweep_settle_sec))
+        hold = max(dt, float(self.cfg.body_shift_sweep_hold_sec))
+        values = torch.linspace(
+            -float(self.cfg.body_shift_sweep_extent_m),
+            float(self.cfg.body_shift_sweep_extent_m),
+            int(self.cfg.body_shift_sweep_points),
+            device=self.device,
+            dtype=q_policy.dtype,
+        )
+        if elapsed < settle:
+            shift_x = torch.zeros(self.num_envs, device=self.device, dtype=q_policy.dtype)
+            shift_y = torch.zeros_like(shift_x)
+        else:
+            point = int((elapsed - settle) / hold)
+            point = min(point, values.numel() * values.numel() - 1)
+            shift_x = values[point // values.numel()].expand(self.num_envs)
+            shift_y = values[point % values.numel()].expand(self.num_envs)
+        self.last_body_shift_xy[:, 0] = shift_x
+        self.last_body_shift_xy[:, 1] = shift_y
+        foot_x_delta = -shift_x.unsqueeze(1).expand(-1, 4)
+        q_policy = self._foot_target_to_policy(
+            q_policy,
+            foot_x_delta=foot_x_delta,
+            body_shift_y=shift_y,
+        )
+        self._set_diagnostic_reference(q_policy)
+        self._rear_lift_step += 1
+        return q_policy
+
+    def _fast_diagonal_trot_target(self) -> torch.Tensor:
+        q_policy = self.reference.default_joint_pos.clone()
+        dt = float(self._env.step_dt)
+        dtype = q_policy.dtype
+        device = self.device
+        warmup = torch.clamp(
+            torch.full(
+                (self.num_envs,),
+                self._rear_lift_step * dt / max(float(self.cfg.fast_trot_warmup_sec), 1.0e-6),
+                device=device,
+                dtype=dtype,
+            ),
+            0.0,
+            1.0,
+        )
+        frequency = torch.full(
+            (self.num_envs,), float(self.cfg.fast_trot_step_hz), device=device, dtype=dtype
+        )
+        stride = torch.full(
+            (self.num_envs,),
+            float(self.cfg.fast_trot_stride_length_m),
+            device=device,
+            dtype=dtype,
+        ) * warmup
+        front_height = torch.full(
+            (self.num_envs, 2),
+            float(self.cfg.fast_trot_front_swing_height_m),
+            device=device,
+            dtype=dtype,
+        )
+        rear_height = torch.full(
+            (self.num_envs, 2),
+            float(self.cfg.fast_trot_rear_swing_height_m),
+            device=device,
+            dtype=dtype,
+        )
+        leg_height = torch.cat(
+            (front_height[:, 0:1], front_height[:, 1:2], rear_height[:, 0:1], rear_height[:, 1:2]),
+            dim=1,
+        ) * warmup.unsqueeze(1)
+        swing_height = torch.max(leg_height, dim=1).values
+        self.reference.base_phase = torch.remainder(
+            self.reference.base_phase + frequency * dt, 1.0
+        )
+        phase_a = self.reference.base_phase
+        phase_b = torch.remainder(self.reference.base_phase + 0.5, 1.0)
+        leg_phase = torch.zeros(self.num_envs, 4, device=device, dtype=dtype)
+        leg_phase[:, [0, 3]] = phase_a.unsqueeze(1).expand(-1, 2)
+        leg_phase[:, [1, 2]] = phase_b.unsqueeze(1).expand(-1, 2)
+        swing_fraction = max(0.05, min(0.49, 1.0 - float(self.cfg.fast_trot_duty_factor)))
+        swing_mask = leg_phase < swing_fraction
+        pair_a_swing = torch.any(swing_mask[:, [0, 3]], dim=1)
+        pair_b_swing = torch.any(swing_mask[:, [1, 2]], dim=1)
+        self.last_active_swing_pair[:] = torch.where(
+            pair_a_swing,
+            torch.ones_like(self.last_active_swing_pair),
+            torch.where(pair_b_swing, torch.full_like(self.last_active_swing_pair, 2), 0),
+        )
+        self.last_expected_support_pair[:] = torch.where(
+            pair_a_swing,
+            torch.full_like(self.last_expected_support_pair, 2),
+            torch.where(pair_b_swing, torch.ones_like(self.last_expected_support_pair), 0),
+        )
+
+        s_swing = torch.clamp(leg_phase / swing_fraction, 0.0, 1.0)
+        s_stance = torch.clamp((leg_phase - swing_fraction) / (1.0 - swing_fraction), 0.0, 1.0)
+        advance = self.reference._smootherstep01(s_swing)
+        peak_phase = min(0.80, max(0.20, float(self.cfg.fast_trot_swing_lift_peak_phase)))
+        touchdown_phase = min(0.98, max(peak_phase + 0.05, float(self.cfg.fast_trot_touchdown_phase)))
+        lift_up = self.reference._smootherstep01(torch.clamp(s_swing / peak_phase, 0.0, 1.0))
+        lift_down = 1.0 - self.reference._smootherstep01(
+            torch.clamp((s_swing - peak_phase) / max(touchdown_phase - peak_phase, 1.0e-6), 0.0, 1.0)
+        )
+        swing_shape = lift_up * lift_down * swing_mask * (s_swing < touchdown_phase)
+        stance_progress = self.reference._smootherstep01(s_stance)
+        early_stance = min(0.30, max(0.0, float(self.cfg.fast_trot_early_stance_blend)))
+        touchdown_progress = torch.clamp(
+            (s_swing - touchdown_phase) / max(1.0 - touchdown_phase, 1.0e-6),
+            0.0,
+            1.0,
+        )
+        touchdown_blend = self.reference._smootherstep01(touchdown_progress) * swing_mask
+        early_stance_gate = torch.clamp(1.0 - s_stance / max(early_stance, 1.0e-6), 0.0, 1.0)
+        early_stance_gate = self.reference._smootherstep01(early_stance_gate) * (~swing_mask)
+        default_thigh = q_policy[:, 1::3]
+        default_calf = q_policy[:, 2::3]
+        x_default, z_default = self.reference._forward_sagittal(default_thigh, default_calf)
+        support_gate = torch.maximum(
+            (~swing_mask).to(dtype),
+            torch.maximum(touchdown_blend, early_stance_gate),
+        )
+        preload_phase = torch.remainder(leg_phase + swing_fraction, 1.0)
+        preload_width = max(1.0e-6, float(self.cfg.fast_trot_preload_fraction))
+        preload_gate = self.reference._smootherstep01(
+            torch.clamp((preload_phase - (1.0 - preload_width)) / preload_width, 0.0, 1.0)
+        )
+        support_preload = (
+            -float(self.cfg.fast_trot_support_preload_z_m)
+            * torch.maximum(support_gate, preload_gate * support_gate)
+            * warmup.unsqueeze(1)
+        )
+        x_swing = x_default - 0.5 * stride.unsqueeze(1) + stride.unsqueeze(1) * advance
+        x_stance = x_default + 0.5 * stride.unsqueeze(1) - stride.unsqueeze(1) * stance_progress
+        z_swing = z_default + leg_height * swing_shape
+        z_stance = z_default + support_preload
+        x_target = torch.where(swing_mask, x_swing, x_stance)
+        z_touchdown = torch.where(touchdown_blend > 0.0, z_stance, z_swing)
+        z_target = torch.where(swing_mask, z_touchdown, z_stance)
+        thigh_target, calf_target = self.reference._inverse_sagittal(x_target, z_target)
+        q_policy[:, 1::3] = thigh_target
+        q_policy[:, 2::3] = calf_target
+
+        self._apply_fast_trot_gains(swing_mask)
+
+        self.reference.last_q_ref[:] = q_policy
+        self.reference.last_leg_phase[:] = leg_phase
+        self.reference.last_swing_mask[:] = swing_mask
+        self.reference.last_active_swing_one_hot[:] = swing_mask.to(dtype)
+        self.reference.last_support_gate[:] = (~swing_mask).to(dtype)
+        self.reference.last_preload_gate[:] = preload_gate * support_gate
+        self.reference.last_post_touchdown_gate.zero_()
+        self.reference.last_frequency = frequency
+        self.reference.last_stride = stride
+        self.reference.last_swing_height = swing_height
+        self.reference.last_duty_factor = torch.full_like(frequency, float(self.cfg.fast_trot_duty_factor))
+        self.reference.last_warmup = warmup
+        self.reference.last_predicted_foot_z = self.reference._forward_sagittal(
+            q_policy[:, 1::3], q_policy[:, 2::3]
+        )[1]
+        self.reference.last_predicted_foot_lift = (
+            self.reference.last_predicted_foot_z - self.reference.default_foot_z
+        )
+        self.last_support_preload_delta_z[:] = support_preload
+        self.last_target_leg_unload_delta_z.zero_()
+        self._rear_lift_step += 1
+        return q_policy
+
+    def _apply_fast_trot_gains(self, swing_mask: torch.Tensor) -> None:
+        dtype = self.processed_actions.dtype
+        support_mask = ~swing_mask
+        kp = torch.zeros(self.num_envs, 12, device=self.device, dtype=dtype)
+        kd = torch.zeros_like(kp)
+        swing_kp = torch.tensor(
+            (
+                float(self.cfg.fast_trot_swing_hip_kp),
+                float(self.cfg.fast_trot_swing_thigh_kp),
+                float(self.cfg.fast_trot_swing_calf_kp),
+            ),
+            device=self.device,
+            dtype=dtype,
+        )
+        support_kp = torch.tensor(
+            (
+                float(self.cfg.fast_trot_support_hip_kp),
+                float(self.cfg.fast_trot_support_thigh_kp),
+                float(self.cfg.fast_trot_support_calf_kp),
+            ),
+            device=self.device,
+            dtype=dtype,
+        )
+        for leg_index in range(4):
+            cols = slice(leg_index * 3, leg_index * 3 + 3)
+            leg_swing = swing_mask[:, leg_index].unsqueeze(1)
+            kp[:, cols] = torch.where(leg_swing, swing_kp.unsqueeze(0), support_kp.unsqueeze(0))
+            kd[:, cols] = torch.where(
+                leg_swing,
+                torch.full((self.num_envs, 3), float(self.cfg.fast_trot_swing_kd), device=self.device, dtype=dtype),
+                torch.full((self.num_envs, 3), float(self.cfg.fast_trot_support_kd), device=self.device, dtype=dtype),
+            )
+        self.last_debug_kp[:] = kp
+        self.last_debug_kd[:] = kd
+        self.debug_kp_override = kp
+        self.debug_kd_override = kd
+        self._asset.write_joint_stiffness_to_sim(kp, joint_ids=self._joint_ids)
+        self._asset.write_joint_damping_to_sim(kd, joint_ids=self._joint_ids)
 
     def process_actions(self, actions: torch.Tensor):
         self._raw_actions[:] = actions
@@ -432,6 +901,15 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
         if self.cfg.action_mode == "rear_lift_test":
             q_cpg_policy = self._rear_lift_test_target()
             q_vmc_delta = torch.zeros_like(q_cpg_policy)
+        elif self.cfg.action_mode == "press_sign_test":
+            q_cpg_policy = self._press_sign_test_target()
+            q_vmc_delta = torch.zeros_like(q_cpg_policy)
+        elif self.cfg.action_mode == "body_shift_sweep":
+            q_cpg_policy = self._body_shift_sweep_target()
+            q_vmc_delta = torch.zeros_like(q_cpg_policy)
+        elif self.cfg.action_mode == "fast_diagonal_trot":
+            q_cpg_policy = self._fast_diagonal_trot_target()
+            q_vmc_delta = torch.zeros_like(q_cpg_policy)
         else:
             q_cpg_policy = self.reference.update(self._commands())
             q_vmc_delta = self._compute_vmc_delta(q_cpg_policy)
@@ -452,7 +930,13 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
         q_ref_sim = self.semantic_adapter.policy_to_sim(q_ref_policy)
         q_raw = self.semantic_adapter.policy_to_sim(q_raw_policy)
         q_before_joint_limit = q_raw.clone()
-        if self.cfg.action_mode in ("reference_stage", "rear_lift_test"):
+        if self.cfg.action_mode in (
+            "reference_stage",
+            "rear_lift_test",
+            "press_sign_test",
+            "body_shift_sweep",
+            "fast_diagonal_trot",
+        ):
             q_raw = self._clamp_to_hard_joint_limits(q_raw)
         elif self.cfg.clip is not None:
             q_raw = torch.clamp(q_raw, min=self._clip[:, :, 0], max=self._clip[:, :, 1])
@@ -609,6 +1093,28 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
         self.last_filter_error[env_ids] = 0.0
         self.last_filter_clipping_ratio[env_ids] = 0.0
         self.last_torque_clipping_ratio[env_ids] = 0.0
+        self.last_rear_lift_phase[env_ids] = 0
+        self.last_support_preload_delta_z[env_ids] = 0.0
+        self.last_target_leg_unload_delta_z[env_ids] = 0.0
+        self._rear_lift_state_step[env_ids] = 0
+        self._rear_lift_force_drop_steps[env_ids] = 0
+        self.last_force_drop_success[env_ids] = False
+        self.last_failure_reason[env_ids] = 0
+        self.last_force_below_threshold[env_ids] = False
+        self.last_force_below_timer[env_ids] = 0.0
+        self.last_first_force_drop_time[env_ids] = -1.0
+        self.last_lift_entry_time[env_ids] = -1.0
+        self.last_missed_force_drop_window[env_ids] = False
+        self.last_state_transition_reason[env_ids] = 0
+        self.last_active_swing_pair[env_ids] = 0
+        self.last_expected_support_pair[env_ids] = 0
+        self.last_debug_kp[env_ids] = max(float(self.cfg.sim_kp), 1.0e-6)
+        self.last_debug_kd[env_ids] = max(float(self.cfg.sim_kd), 0.0)
+        self.last_body_shift_xy[env_ids] = 0.0
+        self.last_diagnostic_leg[env_ids] = -1
+        self.last_diagnostic_delta_z[env_ids] = 0.0
+        self.last_diagnostic_force_before[env_ids] = 0.0
+        self.last_diagnostic_force_after[env_ids] = 0.0
         if env_ids.numel() == self.num_envs:
             self._joint_mapping_step = 0
             self._joint_mapping_index = -1
@@ -619,6 +1125,12 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
 
     def get_debug_info(self) -> dict[str, torch.Tensor]:
         debug = dict(self.reference.get_debug_info())
+        if self.cfg.action_mode == "fast_diagonal_trot":
+            debug["duty_factor"] = torch.full(
+                (self.num_envs,),
+                float(self.cfg.fast_trot_duty_factor),
+                device=self.device,
+            )
         trunk_pos_w = self._asset.data.body_pos_w[:, self._trunk_body_ids, :]
         trunk_quat_w = self._asset.data.body_quat_w[:, self._trunk_body_ids, :]
         foot_from_trunk_w = self._asset.data.body_pos_w[:, self._foot_body_ids, :] - trunk_pos_w
@@ -626,6 +1138,10 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
             trunk_quat_w.expand(-1, foot_from_trunk_w.shape[1], -1).reshape(-1, 4),
             foot_from_trunk_w.reshape(-1, 3),
         ).reshape(self.num_envs, -1, 3)
+        base_roll, base_pitch, base_yaw = euler_xyz_from_quat(
+            self._asset.data.root_quat_w
+        )
+        foot_normal_force = self._foot_normal_forces()
         active_one_hot = self.reference.last_active_swing_one_hot
         active_leg = torch.where(
             torch.sum(active_one_hot, dim=1) > 0.0,
@@ -665,6 +1181,16 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
                 "acceleration_clip_mask": self.last_accel_clip_mask,
                 "torque_clip_mask": self.last_torque_clip_mask,
                 "tau_est_per_joint": self.last_tau_est,
+                "joint_kp": (
+                    self.debug_kp_override
+                    if self.debug_kp_override is not None
+                    else self.last_debug_kp
+                ),
+                "joint_kd": (
+                    self.debug_kd_override
+                    if self.debug_kd_override is not None
+                    else self.last_debug_kd
+                ),
                 "raw_target_rate_per_joint": self.last_raw_target_rate,
                 "raw_target_rate_max": torch.max(
                     torch.abs(self.last_raw_target_rate), dim=1
@@ -689,6 +1215,30 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
                 "actual_foot_height_body": (
                     foot_from_trunk_b[:, :, 2]
                 ),
+                "base_height": self._asset.data.root_pos_w[:, 2],
+                "base_rpy": torch.stack((base_roll, base_pitch, base_yaw), dim=1),
+                "foot_normal_force": foot_normal_force,
+                "foot_contact_state": foot_normal_force > float(
+                    self.cfg.rear_lift_contact_force_threshold_n
+                ),
+                "rear_lift_phase": self.last_rear_lift_phase,
+                "support_preload_delta_z": self.last_support_preload_delta_z,
+                "target_leg_unload_delta_z": self.last_target_leg_unload_delta_z,
+                "body_shift_xy": self.last_body_shift_xy,
+                "diagnostic_leg": self.last_diagnostic_leg,
+                "diagnostic_delta_z": self.last_diagnostic_delta_z,
+                "diagnostic_force_before": self.last_diagnostic_force_before,
+                "diagnostic_force_after": self.last_diagnostic_force_after,
+                "force_drop_success": self.last_force_drop_success,
+                "failure_reason": self.last_failure_reason,
+                "force_below_threshold": self.last_force_below_threshold,
+                "force_below_timer": self.last_force_below_timer,
+                "first_force_drop_time": self.last_first_force_drop_time,
+                "lift_entry_time": self.last_lift_entry_time,
+                "missed_force_drop_window": self.last_missed_force_drop_window,
+                "state_transition_reason": self.last_state_transition_reason,
+                "active_swing_pair": self.last_active_swing_pair,
+                "expected_support_pair": self.last_expected_support_pair,
             }
         )
         return debug
@@ -720,8 +1270,56 @@ class WaveResidualJointPositionActionCfg(DeployFilteredJointPositionActionCfg):
     rear_lift_test_thigh: float = 0.3491
     rear_lift_test_calf: float = -0.7854
     rear_lift_test_height_m: float = 0.030
-    rear_lift_test_settle_sec: float = 2.0
+    rear_lift_test_settle_sec: float = 1.5
+    rear_lift_pre_shift_sec: float = 0.75
+    rear_lift_test_preload_sec: float = 0.75
+    rear_lift_unload_sec: float = 0.75
     rear_lift_test_cycle_sec: float = 2.0
+    # RR unload naturally forms the FR+RL support pair; RL mirrors to FL+RR.
+    # Do not force the opposite front leg into the primary support role.
+    rear_lift_diagonal_front_preload_m: float = 0.0
+    rear_lift_same_front_preload_m: float = 0.015
+    rear_lift_other_rear_preload_m: float = 0.015
+    rear_lift_foot_down_signs: tuple[float, float, float, float] = (
+        -1.0,
+        -1.0,
+        -1.0,
+        -1.0,
+    )
+    rear_lift_target_unload_m: float = 0.012
+    rear_lift_body_shift_x_m: float = 0.030
+    rear_lift_body_shift_y_m: float = 0.010
+    rear_lift_force_drop_threshold_n: float = 3.0
+    rear_lift_force_confirm_sec: float = 0.20
+    rear_lift_force_drop_timeout_sec: float = 1.0
+    rear_lift_contact_force_threshold_n: float = 1.0
+    press_sign_delta_m: float = 0.010
+    press_sign_rest_sec: float = 1.0
+    press_sign_hold_sec: float = 1.0
+    body_shift_sweep_extent_m: float = 0.030
+    body_shift_sweep_points: int = 7
+    body_shift_sweep_settle_sec: float = 1.5
+    body_shift_sweep_hold_sec: float = 0.75
+    fast_trot_preset: str = "conservative"
+    fast_trot_step_hz: float = 1.10
+    fast_trot_duty_factor: float = 0.62
+    fast_trot_stride_length_m: float = 0.020
+    fast_trot_front_swing_height_m: float = 0.045
+    fast_trot_rear_swing_height_m: float = 0.065
+    fast_trot_warmup_sec: float = 2.0
+    fast_trot_support_preload_z_m: float = 0.008
+    fast_trot_preload_fraction: float = 0.12
+    fast_trot_swing_lift_peak_phase: float = 0.45
+    fast_trot_touchdown_phase: float = 0.82
+    fast_trot_early_stance_blend: float = 0.12
+    fast_trot_swing_hip_kp: float = 50.0
+    fast_trot_swing_thigh_kp: float = 80.0
+    fast_trot_swing_calf_kp: float = 80.0
+    fast_trot_swing_kd: float = 4.5
+    fast_trot_support_hip_kp: float = 70.0
+    fast_trot_support_thigh_kp: float = 180.0
+    fast_trot_support_calf_kp: float = 200.0
+    fast_trot_support_kd: float = 5.0
     joint_limit_warning_interval_sec: float = 1.0
     csv_playback_path: str = "logs/reference_debug/fanfan_gait_playback.csv"
     control_stage: int = 1

@@ -3,6 +3,36 @@ from __future__ import annotations
 import torch
 
 
+def smootherstep_scalar(value: float) -> float:
+    value = min(1.0, max(0.0, float(value)))
+    return value**3 * (value * (value * 6.0 - 15.0) + 10.0)
+
+
+def rear_lift_phase_profile(
+    elapsed: float,
+    *,
+    settle_sec: float,
+    preload_sec: float,
+    cycle_sec: float,
+) -> tuple[int, float, float]:
+    """Return phase id, support-preload gate, and lift gate."""
+    elapsed = max(0.0, float(elapsed))
+    settle_sec = max(0.0, float(settle_sec))
+    preload_sec = max(0.0, float(preload_sec))
+    cycle_sec = max(0.5, float(cycle_sec))
+    if elapsed < settle_sec:
+        return 0, 0.0, 0.0
+    if elapsed < settle_sec + preload_sec:
+        progress = (elapsed - settle_sec) / max(preload_sec, 1.0e-6)
+        return 1, smootherstep_scalar(progress), 0.0
+    cycle_phase = ((elapsed - settle_sec - preload_sec) % cycle_sec) / cycle_sec
+    if cycle_phase < 0.5:
+        lift = smootherstep_scalar(cycle_phase * 2.0)
+    else:
+        lift = 1.0 - smootherstep_scalar((cycle_phase - 0.5) * 2.0)
+    return 2, 1.0, lift
+
+
 def filter_residual(
     policy_output: torch.Tensor,
     previous_residual: torch.Tensor,
