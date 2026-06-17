@@ -54,7 +54,14 @@ parser.add_argument(
 )
 parser.add_argument(
     "--safety_profile",
-    choices=("monitor_only", "performance_safe", "performance_soft_output", "performance_soft_output_v2", "real_safe"),
+    choices=(
+        "monitor_only",
+        "performance_safe",
+        "performance_soft_output",
+        "performance_soft_output_v2",
+        "performance_soft_output_v2_small_fix",
+        "real_safe",
+    ),
     default="monitor_only",
     help="FastDiagonalTrot safety behavior: monitor only, performance-preserving protection, or conservative real-safe.",
 )
@@ -307,7 +314,17 @@ def main():
         env_cfg.actions.joint_pos.fast_trot_preset = trot_preset or "conservative"
         env_cfg.actions.joint_pos.fast_trot_safety_profile = safety_profile
         kp_level = args_cli.support_kp_level or (
-            "real_safe" if safety_profile == "real_safe" else ("mid_soft" if safety_profile in ("performance_soft_output", "performance_soft_output_v2") else "mid")
+            "real_safe"
+            if safety_profile == "real_safe"
+            else (
+                "mid_soft"
+                if safety_profile in (
+                    "performance_soft_output",
+                    "performance_soft_output_v2",
+                    "performance_soft_output_v2_small_fix",
+                )
+                else "mid"
+            )
         )
         kp_profiles = {
             "real_safe": {
@@ -341,7 +358,7 @@ def main():
                 "support": (70.0, 220.0, 220.0, 5.0),
             },
         }
-        if safety_profile == "performance_soft_output_v2" and kp_level == "mid_soft":
+        if safety_profile in ("performance_soft_output_v2", "performance_soft_output_v2_small_fix") and kp_level == "mid_soft":
             kp_profiles["mid_soft"] = {
                 "swing": (50.0, 80.0, 80.0, 5.0),
                 "touchdown": (55.0, 110.0, 120.0, 6.0),
@@ -434,6 +451,38 @@ def main():
             env_cfg.actions.joint_pos.sim_motor_strength_scale_range = (1.0, 1.0)
             env_cfg.actions.joint_pos.sim_kp_scale_range = (1.0, 1.0)
             env_cfg.actions.joint_pos.sim_kd_scale_range = (1.0, 1.0)
+        elif safety_profile == "performance_soft_output_v2_small_fix":
+            env_cfg.actions.joint_pos.enable_deploy_target_filter = True
+            env_cfg.actions.joint_pos.enable_target_rate_limit = True
+            env_cfg.actions.joint_pos.enable_target_accel_limit = False
+            env_cfg.actions.joint_pos.enable_torque_target_limit = True
+            env_cfg.actions.joint_pos.enable_action_delay = False
+            env_cfg.actions.joint_pos.fixed_delay_steps = 0
+            env_cfg.actions.joint_pos.fast_trot_support_preload_z_m = 0.0055
+            env_cfg.actions.joint_pos.fast_trot_support_preload_gate_max = 0.60
+            env_cfg.actions.joint_pos.fast_trot_global_support_height_offset_m = 0.004
+            env_cfg.actions.joint_pos.fast_trot_phase_switch_guard_window = 0.04
+            env_cfg.actions.joint_pos.fast_trot_phase_switch_guard_hip_kp = 58.0
+            env_cfg.actions.joint_pos.fast_trot_phase_switch_guard_thigh_kp = 125.0
+            env_cfg.actions.joint_pos.fast_trot_phase_switch_guard_calf_kp = 135.0
+            env_cfg.actions.joint_pos.fast_trot_phase_switch_guard_kd = 6.2
+            env_cfg.actions.joint_pos.fast_trot_guard_soft_start_torque = 9.5
+            env_cfg.actions.joint_pos.fast_trot_guard_soft_full_torque = 13.5
+            env_cfg.actions.joint_pos.fast_trot_early_stance_blend = 0.24
+            env_cfg.actions.joint_pos.fast_trot_support_preload_ramp_in_phase = 0.16
+            env_cfg.actions.joint_pos.fast_trot_support_preload_ramp_out_phase = 0.16
+            env_cfg.actions.joint_pos.sim_target_rate_limit_range = (9.0, 9.0)
+            env_cfg.actions.joint_pos.sim_target_accel_limit_range = (1000.0, 1000.0)
+            env_cfg.actions.joint_pos.sim_torque_budget_range = (8.0, 8.0)
+            env_cfg.actions.joint_pos.sim_short_peak_torque_range = (12.0, 12.0)
+            env_cfg.actions.joint_pos.sim_short_peak_prob = 0.0
+            env_cfg.actions.joint_pos.sim_hard_torque_budget = 17.0
+            env_cfg.actions.joint_pos.hip_target_rate_mul = 7.5 / 9.0
+            env_cfg.actions.joint_pos.thigh_target_rate_mul = 1.0
+            env_cfg.actions.joint_pos.calf_target_rate_mul = 1.0
+            env_cfg.actions.joint_pos.sim_motor_strength_scale_range = (1.0, 1.0)
+            env_cfg.actions.joint_pos.sim_kp_scale_range = (1.0, 1.0)
+            env_cfg.actions.joint_pos.sim_kd_scale_range = (1.0, 1.0)
         elif safety_profile == "real_safe":
             env_cfg.actions.joint_pos.enable_deploy_target_filter = True
             env_cfg.actions.joint_pos.enable_target_rate_limit = True
@@ -471,7 +520,15 @@ def main():
         (
             "real_safe"
             if safety_profile == "real_safe"
-            else ("mid_soft" if safety_profile in ("performance_soft_output", "performance_soft_output_v2") else "mid")
+            else (
+                "mid_soft"
+                if safety_profile in (
+                    "performance_soft_output",
+                    "performance_soft_output_v2",
+                    "performance_soft_output_v2_small_fix",
+                )
+                else "mid"
+            )
         )
         if mode == "fast_diagonal_trot"
         else "default"
@@ -582,6 +639,10 @@ def main():
         "yaw_abs",
         "force_sum",
         "contact_count",
+        "phase_switch_guard_active",
+        "phase_switch_guard_strength",
+        "phase_to_switch",
+        "global_support_height_offset_m",
         "target_leg_unload_delta_z",
         "body_shift_x",
         "body_shift_y",
@@ -616,6 +677,7 @@ def main():
         "preload_gate",
         "post_touchdown_gate",
         "support_gate",
+        "guard_kp_scale",
         "joint_limit_clip_mask",
         "rate_limit_clip_mask",
         "acceleration_clip_mask",
@@ -744,11 +806,28 @@ def main():
         "roll_abs": [],
         "pitch_abs": [],
         "yaw_abs": [],
+        "guard_tau": [],
+        "non_guard_tau": [],
         "rear_swing_force_mid": [],
         "rear_swing_force_touchdown": [],
     }
     fast_trot_tau_joint = [[] for _ in JOINT_NAMES]
     fast_trot_force_leg = [[] for _ in LEG_NAMES]
+    max_spike = {
+        "tau": float("-inf"),
+        "time": 0.0,
+        "phase": 0.0,
+        "guard": 0.0,
+        "phase_to_switch": 0.0,
+        "active_pair": "",
+        "support_pair": "",
+        "force_sum": 0.0,
+        "contact_count": 0,
+        "base_height": 0.0,
+        "roll": 0.0,
+        "pitch": 0.0,
+        "tau_joint": [0.0] * len(JOINT_NAMES),
+    }
     csv_schema_checked = False
     with output_path.open("w", newline="", encoding="utf-8") as csv_file:
         writer = csv.writer(csv_file)
@@ -895,6 +974,11 @@ def main():
                     fast_trot_stats["support_preload_max"].append(
                         max(_row_vector(debug["support_preload_delta_z"]))
                     )
+                    guard_strength = _scalar(debug["phase_switch_guard_strength"])
+                    if guard_strength > 1.0e-6:
+                        fast_trot_stats["guard_tau"].append(_scalar(debug["tau_est_cmd_final_max"]))
+                    else:
+                        fast_trot_stats["non_guard_tau"].append(_scalar(debug["tau_est_cmd_final_max"]))
                     rpy = _row_vector(debug["base_rpy"])
                     fast_trot_stats["roll_abs"].append(abs(rpy[0]))
                     fast_trot_stats["pitch_abs"].append(abs(rpy[1]))
@@ -908,6 +992,25 @@ def main():
                                 fast_trot_stats["rear_swing_force_mid"].append(float(forces[rear_index] < 3.0))
                             elif phases[rear_index] > 0.70:
                                 fast_trot_stats["rear_swing_force_touchdown"].append(float(forces[rear_index] < 3.0))
+                    tau_max = _scalar(debug["tau_est_cmd_final_max"])
+                    if tau_max > max_spike["tau"]:
+                        max_spike.update(
+                            {
+                                "tau": tau_max,
+                                "time": step * float(base_env.step_dt),
+                                "phase": _scalar(action_term.reference.base_phase),
+                                "guard": guard_strength,
+                                "phase_to_switch": _scalar(debug["phase_to_switch"]),
+                                "active_pair": active_pair_name,
+                                "support_pair": support_pair_name,
+                                "force_sum": force_sum,
+                                "contact_count": contact_count,
+                                "base_height": _scalar(debug["base_height"]),
+                                "roll": rpy[0],
+                                "pitch": rpy[1],
+                                "tau_joint": tau_cmd,
+                            }
+                        )
 
                 row = [
                     step * float(base_env.step_dt),
@@ -981,6 +1084,10 @@ def main():
                     abs(_row_vector(debug["base_rpy"])[2]),
                     force_sum,
                     contact_count,
+                    int(bool(_scalar(debug["phase_switch_guard_active"]))),
+                    _scalar(debug["phase_switch_guard_strength"]),
+                    _scalar(debug["phase_to_switch"]),
+                    _scalar(debug["global_support_height_offset_m"]),
                     _scalar(debug["target_leg_unload_delta_z"]),
                     _row_vector(debug["body_shift_xy"])[0],
                     _row_vector(debug["body_shift_xy"])[1],
@@ -1014,6 +1121,7 @@ def main():
                 row += _row_vector(debug["preload_gate"])
                 row += _row_vector(debug["post_touchdown_gate"])
                 row += _row_vector(debug["support_gate"])
+                row += _row_vector(debug["guard_kp_scale"])
                 row += _row_vector(debug["joint_limit_clip_mask"].to(torch.float32))
                 row += _row_vector(debug["rate_limit_clip_mask"].to(torch.float32))
                 row += _row_vector(debug["acceleration_clip_mask"].to(torch.float32))
@@ -1197,6 +1305,36 @@ def main():
                 f"{(max(fast_trot_stats['raw_target_rate_max']) if fast_trot_stats['raw_target_rate_max'] else float('nan')):.2f}rad/s"
             )
             print(
+                "[FAST_TROT_PHASE_SWITCH_SPIKES] "
+                f"guard_tau p95/p99/max="
+                f"{_percentile(fast_trot_stats['guard_tau'], 95):.2f}/"
+                f"{_percentile(fast_trot_stats['guard_tau'], 99):.2f}/"
+                f"{(max(fast_trot_stats['guard_tau']) if fast_trot_stats['guard_tau'] else float('nan')):.2f}Nm "
+                f"non_guard_tau p95/p99/max="
+                f"{_percentile(fast_trot_stats['non_guard_tau'], 95):.2f}/"
+                f"{_percentile(fast_trot_stats['non_guard_tau'], 99):.2f}/"
+                f"{(max(fast_trot_stats['non_guard_tau']) if fast_trot_stats['non_guard_tau'] else float('nan')):.2f}Nm"
+            )
+            spike_cause = (
+                "phase_switch_kp_or_speed"
+                if max_spike["guard"] > 1.0e-6 and max_spike["force_sum"] < 135.0
+                else "ground_contact_or_load_spike"
+            )
+            print(
+                "[FAST_TROT_MAX_SPIKE] "
+                f"tau={max_spike['tau']:.2f}Nm time={max_spike['time']:.3f}s "
+                f"phase={max_spike['phase']:.3f} phase_to_switch={max_spike['phase_to_switch']:.3f} "
+                f"guard={max_spike['guard']:.3f} active_pair={max_spike['active_pair']} "
+                f"support_pair={max_spike['support_pair']} force_sum={max_spike['force_sum']:.2f}N "
+                f"contact_count={max_spike['contact_count']} base_height={max_spike['base_height']:.4f}m "
+                f"roll/pitch={max_spike['roll'] * 57.2958:+.2f}/"
+                f"{max_spike['pitch'] * 57.2958:+.2f}deg cause={spike_cause}"
+            )
+            print("[FAST_TROT_MAX_SPIKE_JOINT_TAU] " + " ".join(
+                f"{name}={value:+.2f}"
+                for name, value in zip(JOINT_NAMES, max_spike["tau_joint"])
+            ))
+            print(
                 "[FAST_TROT_BASE] "
                 f"height mean/min/p95="
                 f"{_mean(fast_trot_stats['base_height']):.3f}/"
@@ -1259,14 +1397,21 @@ def main():
                     f"{_percentile(values, 95):.2f}/"
                     f"{(max(values) if values else float('nan')):.2f}Nm"
                 )
-            if safety_profile in ("performance_soft_output", "performance_soft_output_v2"):
+            if safety_profile in (
+                "performance_soft_output",
+                "performance_soft_output_v2",
+                "performance_soft_output_v2_small_fix",
+            ):
                 baseline_path = output_path.parent / "fast_diagonal_trot_balanced_mid_performance_safe_baseline.csv"
                 v1_path = output_path.parent / "fast_diagonal_trot_balanced_mid_soft_performance_soft_output.csv"
+                v2_path = output_path.parent / "fast_diagonal_trot_balanced_mid_soft_performance_soft_output_v2.csv"
                 available = {"current": output_path}
                 if baseline_path.exists():
                     available["baseline"] = baseline_path
                 if v1_path.exists():
                     available["v1"] = v1_path
+                if v2_path.exists() and v2_path.resolve() != output_path.resolve():
+                    available["v2"] = v2_path
                 summaries = {name: _csv_summary(path) for name, path in available.items()}
                 if "baseline" in summaries:
                     print(
@@ -1304,22 +1449,34 @@ def main():
                             f"baseline={summaries['baseline'][key]:.4f} "
                             f"delta={summaries['current'][key] - summaries['baseline'][key]:+.4f}"
                         )
-                    if "v1" in summaries and safety_profile == "performance_soft_output_v2":
-                        print("[FAST_TROT_CSV_COMPARISON_V1] current=v2 previous=v1")
-                        for key in keys:
+                    for label in ("v1", "v2"):
+                        if label in summaries:
                             print(
-                                f"  {key}: v2={summaries['current'][key]:.4f} "
-                                f"v1={summaries['v1'][key]:.4f} "
-                                f"delta={summaries['current'][key] - summaries['v1'][key]:+.4f}"
+                                f"[FAST_TROT_CSV_COMPARISON_{label.upper()}] "
+                                f"current={safety_profile} previous={label}"
                             )
+                            for key in keys:
+                                print(
+                                    f"  {key}: current={summaries['current'][key]:.4f} "
+                                    f"{label}={summaries[label][key]:.4f} "
+                                    f"delta={summaries['current'][key] - summaries[label][key]:+.4f}"
+                                )
                     torque_ok = summaries["current"]["tau_p95"] < 14.0
                     force_better_than_v1 = (
                         "v1" in summaries
                         and summaries["current"]["force_p95"] < summaries["v1"]["force_p95"]
                     )
+                    force_not_worse_than_v2 = (
+                        "v2" not in summaries
+                        or summaries["current"]["force_p95"] <= summaries["v2"]["force_p95"] + 15.0
+                    )
                     contact_better_than_v1 = (
                         "v1" in summaries
                         and summaries["current"]["contact_1"] < summaries["v1"]["contact_1"]
+                    )
+                    contact_not_worse_than_v2 = (
+                        "v2" not in summaries
+                        or summaries["current"]["contact_1"] <= summaries["v2"]["contact_1"] + 0.04
                     )
                     close_to_ref = summaries["current"]["diff_p95"] < 0.30
                     stable_height = summaries["current"]["base_min"] >= 0.285
@@ -1331,7 +1488,9 @@ def main():
                         "[FAST_TROT_CANDIDATE_JUDGMENT] "
                         f"tau_p95_ok={int(torque_ok)} "
                         f"force_sum_lower_than_v1={int(force_better_than_v1)} "
+                        f"force_sum_not_worse_than_v2={int(force_not_worse_than_v2)} "
                         f"one_foot_contact_lower_than_v1={int(contact_better_than_v1)} "
+                        f"one_foot_contact_not_worse_than_v2={int(contact_not_worse_than_v2)} "
                         f"q_cmd_close_to_ref={int(close_to_ref)} "
                         f"base_height_ok={int(stable_height)} "
                         f"attitude_ok={int(attitude_ok)}"

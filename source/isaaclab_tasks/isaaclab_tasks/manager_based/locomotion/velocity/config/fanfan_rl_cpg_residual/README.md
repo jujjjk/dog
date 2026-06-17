@@ -347,6 +347,7 @@ monitor_only:      do not modify q_ref; only record risk metrics
 performance_safe: keep balanced_v2_mid shape; only compress dangerous peaks
 performance_soft_output: mid_soft gains plus no-overshoot rate limiting and 10/14/17 N.m backoff
 performance_soft_output_v2: reduced preload, faster no-overshoot rate limit, slower stance Kp handoff, higher damping
+performance_soft_output_v2_small_fix: v2 plus phase-switch guard and +4 mm stance height offset
 real_safe:         conservative first hardware-proximity check
 ```
 
@@ -359,6 +360,7 @@ monitor_only:      compute only, do not apply
 performance_safe: continuous warn 8 N.m, soft zone 12..17 N.m, hard 17 N.m
 performance_soft_output: 8 N.m statistics, soft backoff starts at 10 N.m, stronger at 14 N.m, hard 17 N.m
 performance_soft_output_v2: same torque backoff as v1, tuned to reduce bounce and ground-force spikes
+performance_soft_output_v2_small_fix: same v2 preload/rate settings; only guard-window backoff is slightly earlier
 real_safe:         strict conservative budget
 ```
 
@@ -377,6 +379,11 @@ The v2 profile additionally records and summarizes `force_sum`,
 `contact_count`, `roll_abs`, `pitch_abs`, `yaw_abs`, preload gates, and
 support preload deltas. Use these to check whether the robot is bouncing or
 spiking ground reaction forces.
+
+The v2 small-fix profile adds `phase_switch_guard_active`,
+`phase_switch_guard_strength`, `phase_to_switch`, `guard_kp_scale_0..11`, and
+`global_support_height_offset_m`. These fields isolate the rare torque spikes
+near the `0.0/0.5` diagonal pair switch without changing the trot phase.
 
 Monitor-only, preserving the original CPG target exactly:
 
@@ -426,6 +433,19 @@ lowest possible torque:
   --support_kp_level mid_soft \
   --safety_profile performance_soft_output_v2 \
   --output logs/reference_debug/fast_diagonal_trot_balanced_mid_soft_performance_soft_output_v2.csv
+```
+
+Performance-soft-output v2 small-fix, preserving v2 while guarding phase-switch
+spikes and raising the stance height by 4 mm:
+
+```bash
+./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-FastDiagonalTrot-SafeReference-v0 \
+  --num_envs 1 --duration 20 \
+  --trot_preset balanced \
+  --support_kp_level mid_soft \
+  --safety_profile performance_soft_output_v2_small_fix \
+  --output logs/reference_debug/fast_diagonal_trot_balanced_mid_soft_performance_soft_output_v2_small_fix.csv
 ```
 
 Baseline comparison for the soft-output run:
