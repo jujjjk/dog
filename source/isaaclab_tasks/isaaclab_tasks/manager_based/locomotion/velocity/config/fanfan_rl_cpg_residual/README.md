@@ -272,12 +272,24 @@ CSV includes `active_swing_pair`, `support_pair`, `actual_support_pair`, all
 four foot normal forces, foot world heights, base roll/pitch, q errors,
 estimated torques, and per-joint `kp_0..11` / `kd_0..11`.
 
+Gain profiles:
+
+```text
+real_safe: swing 40/70/70, support 60/120/140, kd 4.2/5.0
+mid:       swing 50/80/80, support 70/160/180, kd 4.5/5.0
+high:      swing 50/80/80, support 70/180/200, kd 4.5/5.0
+very_high: swing 50/80/80, support 70/220/220, kd 4.5/5.0
+```
+
+`mid` and above are simulation morphology/debug profiles. Do not treat them as
+hardware defaults. Use `real_safe` for the first safety-chain check.
+
 ```bash
 ./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
   --task Isaac-Velocity-Flat-FanfanRlCpgResidual-FastDiagonalTrot-Reference-v0 \
   --num_envs 1 --duration 20 \
   --trot_preset conservative \
-  --support_kp_level high \
+  --support_kp_level mid \
   --output logs/reference_debug/fast_diagonal_trot_conservative_v2.csv
 ```
 
@@ -297,7 +309,7 @@ support_preload_z = -0.009 m
   --task Isaac-Velocity-Flat-FanfanRlCpgResidual-FastDiagonalTrot-Reference-v0 \
   --num_envs 1 --duration 20 \
   --trot_preset balanced \
-  --support_kp_level high \
+  --support_kp_level mid \
   --output logs/reference_debug/fast_diagonal_trot_balanced_v2.csv
 ```
 
@@ -317,12 +329,131 @@ support_preload_z = -0.010 m
   --task Isaac-Velocity-Flat-FanfanRlCpgResidual-FastDiagonalTrot-Reference-v0 \
   --num_envs 1 --duration 20 \
   --trot_preset fast \
-  --support_kp_level high \
+  --support_kp_level mid \
   --output logs/reference_debug/fast_diagonal_trot_fast_v2.csv
 ```
 
 You can also sweep only preload with
 `--fast_trot_support_preload_z 0.006`, `0.008`, or `0.010`.
+
+### Fast diagonal trot safety chain
+
+`FastDiagonalTrot-Reference-v0` intentionally bypasses the deploy target filter;
+it is for gait shape and contact timing. Safety diagnostics use
+`FastDiagonalTrot-SafeReference-v0` plus an explicit `--safety_profile`:
+
+```text
+monitor_only:      do not modify q_ref; only record risk metrics
+performance_safe: keep balanced_v2_mid shape; only compress dangerous peaks
+performance_soft_output: mid_soft gains plus no-overshoot rate limiting and 10/14/17 N.m backoff
+performance_soft_output_v2: reduced preload, faster no-overshoot rate limit, slower stance Kp handoff, higher damping
+real_safe:         conservative first hardware-proximity check
+```
+
+The torque-error math remains per-joint Kp aware, not the old scalar
+`sim_kp=40` assumption:
+
+```text
+err_limit_joint = torque_budget_joint / kp_actual_joint
+monitor_only:      compute only, do not apply
+performance_safe: continuous warn 8 N.m, soft zone 12..17 N.m, hard 17 N.m
+performance_soft_output: 8 N.m statistics, soft backoff starts at 10 N.m, stronger at 14 N.m, hard 17 N.m
+performance_soft_output_v2: same torque backoff as v1, tuned to reduce bounce and ground-force spikes
+real_safe:         strict conservative budget
+```
+
+The CSV includes `kp_actual_0..11`, `kd_actual_0..11`,
+`torque_budget_0..11`, `err_limit_0..11`, raw/filtered/final torque estimates,
+rate/accel/torque clip deltas, `torque_clip_mask_0..11`, `torque_clip_ratio`,
+and raw/final `over_8/12/17nm` ratios.
+
+`performance_soft_output` also records `q_ref_cmd_diff_0..11`,
+`q_ref_cmd_diff_max`, `q_cmd_error_0..11`, `q_cmd_error_max`,
+`q_ref_error_0..11`, and `q_ref_error_max`. Use `q_ref_cmd_diff` to judge
+trajectory damage, and `q_cmd_error` plus `tau_est_cmd_final` to judge
+execution risk.
+
+The v2 profile additionally records and summarizes `force_sum`,
+`contact_count`, `roll_abs`, `pitch_abs`, `yaw_abs`, preload gates, and
+support preload deltas. Use these to check whether the robot is bouncing or
+spiking ground reaction forces.
+
+Monitor-only, preserving the original CPG target exactly:
+
+```bash
+./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-FastDiagonalTrot-SafeReference-v0 \
+  --num_envs 1 --duration 20 \
+  --trot_preset balanced \
+  --support_kp_level mid \
+  --safety_profile monitor_only \
+  --output logs/reference_debug/fast_diagonal_trot_balanced_mid_monitor_only.csv
+```
+
+Performance-safe, for the future light-VMC base:
+
+```bash
+./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-FastDiagonalTrot-SafeReference-v0 \
+  --num_envs 1 --duration 20 \
+  --trot_preset balanced \
+  --support_kp_level mid \
+  --safety_profile performance_safe \
+  --output logs/reference_debug/fast_diagonal_trot_balanced_mid_performance_safe.csv
+```
+
+Performance-soft-output, preserving the diagonal trot while smoothing the
+command sent to the actuator model:
+
+```bash
+./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-FastDiagonalTrot-SafeReference-v0 \
+  --num_envs 1 --duration 20 \
+  --trot_preset balanced \
+  --support_kp_level mid_soft \
+  --safety_profile performance_soft_output \
+  --output logs/reference_debug/fast_diagonal_trot_balanced_mid_soft_performance_soft_output.csv
+```
+
+Performance-soft-output v2, tuned to reduce bounce rather than chase the
+lowest possible torque:
+
+```bash
+./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-FastDiagonalTrot-SafeReference-v0 \
+  --num_envs 1 --duration 20 \
+  --trot_preset balanced \
+  --support_kp_level mid_soft \
+  --safety_profile performance_soft_output_v2 \
+  --output logs/reference_debug/fast_diagonal_trot_balanced_mid_soft_performance_soft_output_v2.csv
+```
+
+Baseline comparison for the soft-output run:
+
+```bash
+./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-FastDiagonalTrot-SafeReference-v0 \
+  --num_envs 1 --duration 20 \
+  --trot_preset balanced \
+  --support_kp_level mid \
+  --safety_profile performance_safe \
+  --output logs/reference_debug/fast_diagonal_trot_balanced_mid_performance_safe_baseline.csv
+```
+
+Real-safe, for later low-risk hardware bring-up:
+
+```bash
+./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-FastDiagonalTrot-SafeReference-v0 \
+  --num_envs 1 --duration 20 \
+  --trot_preset balanced \
+  --support_kp_level real_safe \
+  --safety_profile real_safe \
+  --output logs/reference_debug/fast_diagonal_trot_balanced_real_safe.csv
+```
+
+If `real_safe` cannot keep the rear legs airborne, raise support Kp gradually;
+do not jump directly to `160/180` as a hardware default.
 
 The future training entry point is registered but is not run by reference
 validation:

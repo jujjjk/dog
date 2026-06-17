@@ -42,9 +42,21 @@ parser.add_argument(
 )
 parser.add_argument(
     "--support_kp_level",
-    choices=("mid", "high", "very_high"),
+    choices=("real_safe", "mid_soft", "mid", "high", "very_high"),
     default=None,
-    help="Simulation-only thigh/calf stiffness sweep; damping is fixed at 5.0.",
+    help="FastDiagonalTrot gain profile, or rear-lift support thigh/calf stiffness sweep.",
+)
+parser.add_argument(
+    "--enable_fast_trot_safety",
+    action="store_true",
+    default=False,
+    help="Enable deploy target filter, rate/accel limits, and torque target limits for FastDiagonalTrot.",
+)
+parser.add_argument(
+    "--safety_profile",
+    choices=("monitor_only", "performance_safe", "performance_soft_output", "performance_soft_output_v2", "real_safe"),
+    default="monitor_only",
+    help="FastDiagonalTrot safety behavior: monitor only, performance-preserving protection, or conservative real-safe.",
 )
 parser.add_argument(
     "--trot_preset",
@@ -100,6 +112,124 @@ def _row_vector(tensor: torch.Tensor) -> list[float]:
 
 def _scalar(tensor: torch.Tensor) -> float:
     return float(tensor[0].detach().cpu())
+
+
+def _percentile(values: list[float], q: float) -> float:
+    if not values:
+        return float("nan")
+    tensor = torch.tensor(values, dtype=torch.float32)
+    return float(torch.quantile(tensor, q / 100.0).item())
+
+
+def _mean(values: list[float]) -> float:
+    if not values:
+        return float("nan")
+    return float(sum(values) / len(values))
+
+
+def _csv_summary(path: Path) -> dict[str, float]:
+    columns = {
+        "tau_est_cmd_final_max": [],
+        "q_ref_cmd_diff_max": [],
+        "q_cmd_error_max": [],
+        "q_ref_error_max": [],
+        "over_8nm_cmd_ratio": [],
+        "over_12nm_cmd_ratio": [],
+        "over_17nm_cmd_ratio": [],
+        "base_height": [],
+        "force_sum": [],
+        "contact_count": [],
+        "roll_abs": [],
+        "pitch_abs": [],
+        "yaw_abs": [],
+        "preload_gate_max": [],
+        "support_preload_min": [],
+        "support_preload_max": [],
+        "RR_thigh_tau": [],
+        "RR_calf_tau": [],
+        "RL_thigh_tau": [],
+        "RL_calf_tau": [],
+    }
+    with path.open("r", newline="", encoding="utf-8") as csv_file:
+        reader = csv.DictReader(csv_file)
+        for row in reader:
+            for name in (
+                "tau_est_cmd_final_max",
+                "q_ref_cmd_diff_max",
+                "q_cmd_error_max",
+                "q_ref_error_max",
+                "over_8nm_cmd_ratio",
+                "over_12nm_cmd_ratio",
+                "over_17nm_cmd_ratio",
+                "base_height",
+                "force_sum",
+                "contact_count",
+                "roll_abs",
+                "pitch_abs",
+                "yaw_abs",
+            ):
+                if name in row and row[name] != "":
+                    columns[name].append(float(row[name]))
+            if "force_sum" not in row or row.get("force_sum", "") == "":
+                if all(f"foot_normal_force_{index}" in row for index in range(4)):
+                    columns["force_sum"].append(sum(float(row[f"foot_normal_force_{index}"]) for index in range(4)))
+            if "contact_count" not in row or row.get("contact_count", "") == "":
+                if all(f"foot_normal_force_{index}" in row for index in range(4)):
+                    columns["contact_count"].append(
+                        float(sum(float(row[f"foot_normal_force_{index}"]) > 1.0 for index in range(4)))
+                    )
+            if "roll_abs" not in row or row.get("roll_abs", "") == "":
+                if "base_roll" in row and row["base_roll"] != "":
+                    columns["roll_abs"].append(abs(float(row["base_roll"])))
+            if "pitch_abs" not in row or row.get("pitch_abs", "") == "":
+                if "base_pitch" in row and row["base_pitch"] != "":
+                    columns["pitch_abs"].append(abs(float(row["base_pitch"])))
+            if "yaw_abs" not in row or row.get("yaw_abs", "") == "":
+                if "base_yaw" in row and row["base_yaw"] != "":
+                    columns["yaw_abs"].append(abs(float(row["base_yaw"])))
+            if all(f"preload_gate_{index}" in row for index in range(4)):
+                columns["preload_gate_max"].append(max(float(row[f"preload_gate_{index}"]) for index in range(4)))
+            if all(f"support_preload_delta_z_{index}" in row for index in range(4)):
+                support_preload = [float(row[f"support_preload_delta_z_{index}"]) for index in range(4)]
+                columns["support_preload_min"].append(min(support_preload))
+                columns["support_preload_max"].append(max(support_preload))
+            for key, index in (("RR_thigh_tau", 7), ("RR_calf_tau", 8), ("RL_thigh_tau", 10), ("RL_calf_tau", 11)):
+                name = f"tau_est_cmd_final_{index}"
+                if name in row and row[name] != "":
+                    columns[key].append(abs(float(row[name])))
+    return {
+        "tau_p95": _percentile(columns["tau_est_cmd_final_max"], 95),
+        "tau_max": max(columns["tau_est_cmd_final_max"]) if columns["tau_est_cmd_final_max"] else float("nan"),
+        "diff_p95": _percentile(columns["q_ref_cmd_diff_max"], 95),
+        "cmd_err_p95": _percentile(columns["q_cmd_error_max"], 95),
+        "ref_err_p95": _percentile(columns["q_ref_error_max"], 95),
+        "over_8": _mean(columns["over_8nm_cmd_ratio"]),
+        "over_12": _mean(columns["over_12nm_cmd_ratio"]),
+        "over_17": _mean(columns["over_17nm_cmd_ratio"]),
+        "base_min": min(columns["base_height"]) if columns["base_height"] else float("nan"),
+        "base_mean": _mean(columns["base_height"]),
+        "base_p95": _percentile(columns["base_height"], 95),
+        "force_p50": _percentile(columns["force_sum"], 50),
+        "force_p95": _percentile(columns["force_sum"], 95),
+        "force_p99": _percentile(columns["force_sum"], 99),
+        "force_max": max(columns["force_sum"]) if columns["force_sum"] else float("nan"),
+        "contact_0": _mean([float(value == 0.0) for value in columns["contact_count"]]),
+        "contact_1": _mean([float(value == 1.0) for value in columns["contact_count"]]),
+        "contact_2": _mean([float(value == 2.0) for value in columns["contact_count"]]),
+        "contact_3": _mean([float(value == 3.0) for value in columns["contact_count"]]),
+        "contact_4": _mean([float(value == 4.0) for value in columns["contact_count"]]),
+        "roll_p95_deg": _percentile(columns["roll_abs"], 95) * 57.2958,
+        "pitch_p95_deg": _percentile(columns["pitch_abs"], 95) * 57.2958,
+        "yaw_p95_deg": _percentile(columns["yaw_abs"], 95) * 57.2958,
+        "preload_p95": _percentile(columns["preload_gate_max"], 95),
+        "preload_max": max(columns["preload_gate_max"]) if columns["preload_gate_max"] else float("nan"),
+        "support_preload_min": min(columns["support_preload_min"]) if columns["support_preload_min"] else float("nan"),
+        "support_preload_max": max(columns["support_preload_max"]) if columns["support_preload_max"] else float("nan"),
+        "rr_thigh_p95": _percentile(columns["RR_thigh_tau"], 95),
+        "rr_calf_p95": _percentile(columns["RR_calf_tau"], 95),
+        "rl_thigh_p95": _percentile(columns["RL_thigh_tau"], 95),
+        "rl_calf_p95": _percentile(columns["RL_calf_tau"], 95),
+    }
 
 
 def main():
@@ -170,17 +300,156 @@ def main():
         env_cfg.actions.joint_pos.fast_trot_front_swing_height_m = 0.050
         env_cfg.actions.joint_pos.fast_trot_rear_swing_height_m = 0.070
         env_cfg.actions.joint_pos.fast_trot_support_preload_z_m = 0.010
+    safety_profile = str(args_cli.safety_profile)
+    if args_cli.enable_fast_trot_safety and safety_profile == "monitor_only":
+        safety_profile = "performance_safe"
     if "FastDiagonalTrot" in args_cli.task:
         env_cfg.actions.joint_pos.fast_trot_preset = trot_preset or "conservative"
-        kp_level = args_cli.support_kp_level or "high"
+        env_cfg.actions.joint_pos.fast_trot_safety_profile = safety_profile
+        kp_level = args_cli.support_kp_level or (
+            "real_safe" if safety_profile == "real_safe" else ("mid_soft" if safety_profile in ("performance_soft_output", "performance_soft_output_v2") else "mid")
+        )
         kp_profiles = {
-            "mid": (160.0, 180.0),
-            "high": (180.0, 200.0),
-            "very_high": (220.0, 220.0),
+            "real_safe": {
+                "swing": (40.0, 70.0, 70.0, 4.2),
+                "touchdown": (55.0, 105.0, 120.0, 4.8),
+                "early": (58.0, 115.0, 130.0, 4.9),
+                "support": (60.0, 120.0, 140.0, 5.0),
+            },
+            "mid_soft": {
+                "swing": (50.0, 80.0, 80.0, 4.5),
+                "touchdown": (58.0, 115.0, 125.0, 5.0),
+                "early": (63.0, 135.0, 145.0, 5.1),
+                "support": (65.0, 145.0, 155.0, 5.2),
+            },
+            "mid": {
+                "swing": (50.0, 80.0, 80.0, 4.5),
+                "touchdown": (60.0, 120.0, 130.0, 5.0),
+                "early": (65.0, 145.0, 155.0, 5.0),
+                "support": (70.0, 160.0, 180.0, 5.0),
+            },
+            "high": {
+                "swing": (50.0, 80.0, 80.0, 4.5),
+                "touchdown": (60.0, 120.0, 130.0, 5.0),
+                "early": (65.0, 155.0, 170.0, 5.0),
+                "support": (70.0, 180.0, 200.0, 5.0),
+            },
+            "very_high": {
+                "swing": (50.0, 80.0, 80.0, 4.5),
+                "touchdown": (60.0, 120.0, 130.0, 5.0),
+                "early": (65.0, 170.0, 180.0, 5.0),
+                "support": (70.0, 220.0, 220.0, 5.0),
+            },
         }
-        support_thigh_kp, support_calf_kp = kp_profiles[kp_level]
-        env_cfg.actions.joint_pos.fast_trot_support_thigh_kp = support_thigh_kp
-        env_cfg.actions.joint_pos.fast_trot_support_calf_kp = support_calf_kp
+        if safety_profile == "performance_soft_output_v2" and kp_level == "mid_soft":
+            kp_profiles["mid_soft"] = {
+                "swing": (50.0, 80.0, 80.0, 5.0),
+                "touchdown": (55.0, 110.0, 120.0, 6.0),
+                "early": (60.0, 130.0, 140.0, 6.0),
+                "support": (62.0, 140.0, 150.0, 6.0),
+            }
+        swing_hip, swing_thigh, swing_calf, swing_kd = kp_profiles[kp_level]["swing"]
+        touchdown_hip, touchdown_thigh, touchdown_calf, touchdown_kd = kp_profiles[kp_level]["touchdown"]
+        early_hip, early_thigh, early_calf, early_kd = kp_profiles[kp_level]["early"]
+        support_hip, support_thigh, support_calf, support_kd = kp_profiles[kp_level]["support"]
+        env_cfg.actions.joint_pos.fast_trot_swing_hip_kp = swing_hip
+        env_cfg.actions.joint_pos.fast_trot_swing_thigh_kp = swing_thigh
+        env_cfg.actions.joint_pos.fast_trot_swing_calf_kp = swing_calf
+        env_cfg.actions.joint_pos.fast_trot_swing_kd = swing_kd
+        env_cfg.actions.joint_pos.fast_trot_touchdown_hip_kp = touchdown_hip
+        env_cfg.actions.joint_pos.fast_trot_touchdown_thigh_kp = touchdown_thigh
+        env_cfg.actions.joint_pos.fast_trot_touchdown_calf_kp = touchdown_calf
+        env_cfg.actions.joint_pos.fast_trot_touchdown_kd = touchdown_kd
+        env_cfg.actions.joint_pos.fast_trot_early_stance_hip_kp = early_hip
+        env_cfg.actions.joint_pos.fast_trot_early_stance_thigh_kp = early_thigh
+        env_cfg.actions.joint_pos.fast_trot_early_stance_calf_kp = early_calf
+        env_cfg.actions.joint_pos.fast_trot_early_stance_kd = early_kd
+        env_cfg.actions.joint_pos.fast_trot_support_hip_kp = support_hip
+        env_cfg.actions.joint_pos.fast_trot_support_thigh_kp = support_thigh
+        env_cfg.actions.joint_pos.fast_trot_support_calf_kp = support_calf
+        env_cfg.actions.joint_pos.fast_trot_support_kd = support_kd
+        if safety_profile == "monitor_only":
+            env_cfg.actions.joint_pos.enable_deploy_target_filter = False
+            env_cfg.actions.joint_pos.enable_target_rate_limit = False
+            env_cfg.actions.joint_pos.enable_target_accel_limit = False
+            env_cfg.actions.joint_pos.enable_torque_target_limit = False
+            env_cfg.actions.joint_pos.enable_action_delay = False
+            env_cfg.actions.joint_pos.fixed_delay_steps = 0
+        elif safety_profile == "performance_safe":
+            env_cfg.actions.joint_pos.enable_deploy_target_filter = True
+            env_cfg.actions.joint_pos.enable_target_rate_limit = True
+            env_cfg.actions.joint_pos.enable_target_accel_limit = True
+            env_cfg.actions.joint_pos.enable_torque_target_limit = True
+            env_cfg.actions.joint_pos.enable_action_delay = False
+            env_cfg.actions.joint_pos.fixed_delay_steps = 0
+            env_cfg.actions.joint_pos.sim_target_rate_limit_range = (25.0, 25.0)
+            env_cfg.actions.joint_pos.sim_target_accel_limit_range = (1000.0, 1000.0)
+            env_cfg.actions.joint_pos.sim_torque_budget_range = (8.0, 8.0)
+            env_cfg.actions.joint_pos.sim_short_peak_torque_range = (12.0, 12.0)
+            env_cfg.actions.joint_pos.sim_short_peak_prob = 0.0
+            env_cfg.actions.joint_pos.sim_hard_torque_budget = 17.0
+            env_cfg.actions.joint_pos.sim_motor_strength_scale_range = (1.0, 1.0)
+            env_cfg.actions.joint_pos.sim_kp_scale_range = (1.0, 1.0)
+            env_cfg.actions.joint_pos.sim_kd_scale_range = (1.0, 1.0)
+        elif safety_profile == "performance_soft_output":
+            env_cfg.actions.joint_pos.enable_deploy_target_filter = True
+            env_cfg.actions.joint_pos.enable_target_rate_limit = True
+            env_cfg.actions.joint_pos.enable_target_accel_limit = False
+            env_cfg.actions.joint_pos.enable_torque_target_limit = True
+            env_cfg.actions.joint_pos.enable_action_delay = False
+            env_cfg.actions.joint_pos.fixed_delay_steps = 0
+            env_cfg.actions.joint_pos.sim_target_rate_limit_range = (7.0, 7.0)
+            env_cfg.actions.joint_pos.sim_target_accel_limit_range = (1000.0, 1000.0)
+            env_cfg.actions.joint_pos.sim_torque_budget_range = (8.0, 8.0)
+            env_cfg.actions.joint_pos.sim_short_peak_torque_range = (12.0, 12.0)
+            env_cfg.actions.joint_pos.sim_short_peak_prob = 0.0
+            env_cfg.actions.joint_pos.sim_hard_torque_budget = 17.0
+            env_cfg.actions.joint_pos.hip_target_rate_mul = 0.85
+            env_cfg.actions.joint_pos.thigh_target_rate_mul = 1.0
+            env_cfg.actions.joint_pos.calf_target_rate_mul = 1.0
+            env_cfg.actions.joint_pos.sim_motor_strength_scale_range = (1.0, 1.0)
+            env_cfg.actions.joint_pos.sim_kp_scale_range = (1.0, 1.0)
+            env_cfg.actions.joint_pos.sim_kd_scale_range = (1.0, 1.0)
+        elif safety_profile == "performance_soft_output_v2":
+            env_cfg.actions.joint_pos.enable_deploy_target_filter = True
+            env_cfg.actions.joint_pos.enable_target_rate_limit = True
+            env_cfg.actions.joint_pos.enable_target_accel_limit = False
+            env_cfg.actions.joint_pos.enable_torque_target_limit = True
+            env_cfg.actions.joint_pos.enable_action_delay = False
+            env_cfg.actions.joint_pos.fixed_delay_steps = 0
+            env_cfg.actions.joint_pos.fast_trot_support_preload_z_m = 0.0055
+            env_cfg.actions.joint_pos.fast_trot_support_preload_gate_max = 0.60
+            env_cfg.actions.joint_pos.fast_trot_early_stance_blend = 0.24
+            env_cfg.actions.joint_pos.fast_trot_support_preload_ramp_in_phase = 0.16
+            env_cfg.actions.joint_pos.fast_trot_support_preload_ramp_out_phase = 0.16
+            env_cfg.actions.joint_pos.sim_target_rate_limit_range = (9.0, 9.0)
+            env_cfg.actions.joint_pos.sim_target_accel_limit_range = (1000.0, 1000.0)
+            env_cfg.actions.joint_pos.sim_torque_budget_range = (8.0, 8.0)
+            env_cfg.actions.joint_pos.sim_short_peak_torque_range = (12.0, 12.0)
+            env_cfg.actions.joint_pos.sim_short_peak_prob = 0.0
+            env_cfg.actions.joint_pos.sim_hard_torque_budget = 17.0
+            env_cfg.actions.joint_pos.hip_target_rate_mul = 7.5 / 9.0
+            env_cfg.actions.joint_pos.thigh_target_rate_mul = 1.0
+            env_cfg.actions.joint_pos.calf_target_rate_mul = 1.0
+            env_cfg.actions.joint_pos.sim_motor_strength_scale_range = (1.0, 1.0)
+            env_cfg.actions.joint_pos.sim_kp_scale_range = (1.0, 1.0)
+            env_cfg.actions.joint_pos.sim_kd_scale_range = (1.0, 1.0)
+        elif safety_profile == "real_safe":
+            env_cfg.actions.joint_pos.enable_deploy_target_filter = True
+            env_cfg.actions.joint_pos.enable_target_rate_limit = True
+            env_cfg.actions.joint_pos.enable_target_accel_limit = True
+            env_cfg.actions.joint_pos.enable_torque_target_limit = True
+            env_cfg.actions.joint_pos.enable_action_delay = False
+            env_cfg.actions.joint_pos.fixed_delay_steps = 0
+            env_cfg.actions.joint_pos.sim_target_rate_limit_range = (5.0, 5.0)
+            env_cfg.actions.joint_pos.sim_target_accel_limit_range = (180.0, 180.0)
+            env_cfg.actions.joint_pos.sim_torque_budget_range = (8.0, 8.0)
+            env_cfg.actions.joint_pos.sim_short_peak_torque_range = (8.0, 8.0)
+            env_cfg.actions.joint_pos.sim_short_peak_prob = 0.0
+            env_cfg.actions.joint_pos.sim_hard_torque_budget = 17.0
+            env_cfg.actions.joint_pos.sim_motor_strength_scale_range = (1.0, 1.0)
+            env_cfg.actions.joint_pos.sim_kp_scale_range = (1.0, 1.0)
+            env_cfg.actions.joint_pos.sim_kd_scale_range = (1.0, 1.0)
     if args_cli.fast_trot_support_preload_z is not None:
         env_cfg.actions.joint_pos.fast_trot_support_preload_z_m = float(
             args_cli.fast_trot_support_preload_z
@@ -198,9 +467,19 @@ def main():
     action_term = base_env.action_manager.get_term("joint_pos")
     robot = base_env.scene["robot"]
     env.reset()
-    support_kp_level = args_cli.support_kp_level or ("high" if mode == "fast_diagonal_trot" else "default")
+    support_kp_level = args_cli.support_kp_level or (
+        (
+            "real_safe"
+            if safety_profile == "real_safe"
+            else ("mid_soft" if safety_profile in ("performance_soft_output", "performance_soft_output_v2") else "mid")
+        )
+        if mode == "fast_diagonal_trot"
+        else "default"
+    )
     if args_cli.support_kp_level and mode != "fast_diagonal_trot":
         kp_profiles = {
+            "real_safe": (120.0, 140.0),
+            "mid_soft": (145.0, 155.0),
             "mid": (140.0, 160.0),
             "high": (180.0, 200.0),
             "very_high": (220.0, 220.0),
@@ -257,18 +536,40 @@ def main():
         "rate_limit_clip_ratio",
         "acceleration_clip_ratio",
         "torque_clip_ratio",
+        "rate_limit_delta_max",
+        "accel_limit_delta_max",
+        "torque_clip_delta_max",
         "filter_clip_ratio",
         "max_abs_q_ref_minus_rate",
         "max_abs_q_ref_minus_torque",
         "max_abs_q_ref_minus_final",
+        "tau_est_raw_ref_max",
+        "tau_est_after_rate_max",
+        "tau_est_after_accel_max",
+        "tau_est_cmd_final_max",
         "tau_est_max",
+        "q_error_raw_ref_max",
         "q_error_max",
+        "q_ref_cmd_diff_max",
+        "q_cmd_error_max",
+        "q_ref_error_max",
         "unsafe_torque",
         "tau_est_mean",
         "raw_target_rate_max",
+        "rate_demand_max",
+        "accel_demand_max",
         "over_6nm_ratio",
         "over_8nm_ratio",
         "over_10nm_ratio",
+        "over_12nm_ratio",
+        "over_17nm_ratio",
+        "over_8nm_raw_ratio",
+        "over_12nm_raw_ratio",
+        "over_17nm_raw_ratio",
+        "over_8nm_cmd_ratio",
+        "over_12nm_cmd_ratio",
+        "over_17nm_cmd_ratio",
+        "joint_limit_warning",
         "roll",
         "pitch",
         "yaw",
@@ -276,6 +577,11 @@ def main():
         "base_roll",
         "base_pitch",
         "base_yaw",
+        "roll_abs",
+        "pitch_abs",
+        "yaw_abs",
+        "force_sum",
+        "contact_count",
         "target_leg_unload_delta_z",
         "body_shift_x",
         "body_shift_y",
@@ -327,9 +633,26 @@ def main():
         "q_after_delay",
         "q_cmd_final",
         "q_actual",
+        "q_ref_cmd_diff",
+        "q_ref_error",
         "q_error",
         "q_cmd_error",
         "tau_est",
+        "tau_est_raw_ref",
+        "tau_est_after_rate",
+        "tau_est_after_accel",
+        "tau_est_cmd_final",
+        "q_error_raw_ref",
+        "rate_demand",
+        "accel_demand",
+        "rate_limit_delta",
+        "accel_limit_delta",
+        "torque_clip_delta",
+        "joint_limit_margin",
+        "kp_actual",
+        "kd_actual",
+        "torque_budget",
+        "err_limit",
         "kp",
         "kd",
         "raw_target_rate",
@@ -399,6 +722,33 @@ def main():
     rear_lift_max_phase = 0
     press_samples = {}
     shift_samples = {}
+    fast_trot_stats = {
+        "tau_cmd_max": [],
+        "q_ref_cmd_diff_max": [],
+        "q_cmd_error_max": [],
+        "q_ref_error_max": [],
+        "raw_target_rate_max": [],
+        "rate_clip": [],
+        "torque_clip": [],
+        "filter_clip": [],
+        "over_8": [],
+        "over_10": [],
+        "over_12": [],
+        "over_17": [],
+        "base_height": [],
+        "force_sum": [],
+        "contact_count": [],
+        "preload_gate_max": [],
+        "support_preload_min": [],
+        "support_preload_max": [],
+        "roll_abs": [],
+        "pitch_abs": [],
+        "yaw_abs": [],
+        "rear_swing_force_mid": [],
+        "rear_swing_force_touchdown": [],
+    }
+    fast_trot_tau_joint = [[] for _ in JOINT_NAMES]
+    fast_trot_force_leg = [[] for _ in LEG_NAMES]
     csv_schema_checked = False
     with output_path.open("w", newline="", encoding="utf-8") as csv_file:
         writer = csv.writer(csv_file)
@@ -418,9 +768,13 @@ def main():
                 mapping_index = int(_scalar(debug["joint_mapping_index"]))
                 mapping_name = JOINT_NAMES[mapping_index] if 0 <= mapping_index < 12 else "DEFAULT_POSE"
                 joint_pos = robot.data.joint_pos[:, action_term._joint_ids]
+                q_ref_cmd_diff = debug["simulator_q_ref"] - debug["final_q_cmd"]
                 q_ref_error = debug["simulator_q_ref"] - joint_pos
                 q_cmd_error = debug["final_q_cmd"] - joint_pos
-                q_error_max = float(torch.max(torch.abs(q_ref_error)).detach().cpu())
+                q_ref_cmd_diff_max = float(torch.max(torch.abs(q_ref_cmd_diff)).detach().cpu())
+                q_cmd_error_max = float(torch.max(torch.abs(q_cmd_error)).detach().cpu())
+                q_ref_error_max = float(torch.max(torch.abs(q_ref_error)).detach().cpu())
+                q_error_max = q_ref_error_max
                 roll, pitch, yaw = math_utils.euler_xyz_from_quat(robot.data.root_quat_w)
                 command = base_env.command_manager.get_command("base_velocity")
                 clip_ratio_sum += torch.tensor(
@@ -454,6 +808,8 @@ def main():
                 target_rear_leg = str(action_term.cfg.rear_lift_test_leg).upper()
                 target_rear_index = 2 if target_rear_leg == "RR" else 3
                 foot_forces = _row_vector(debug["foot_normal_force"])
+                force_sum = sum(foot_forces)
+                contact_count = sum(1 for force in foot_forces if force > action_term.cfg.rear_lift_contact_force_threshold_n)
                 support_indices = [
                     index for index in range(4) if index != target_rear_index
                 ]
@@ -509,6 +865,49 @@ def main():
                             _row_vector(debug["base_rpy"])[1],
                         ]
                     )
+                if mode == "fast_diagonal_trot":
+                    tau_cmd = _row_vector(debug["tau_est_cmd_final"])
+                    for joint_index, value in enumerate(tau_cmd):
+                        fast_trot_tau_joint[joint_index].append(abs(value))
+                    fast_trot_stats["tau_cmd_max"].append(_scalar(debug["tau_est_cmd_final_max"]))
+                    fast_trot_stats["q_ref_cmd_diff_max"].append(q_ref_cmd_diff_max)
+                    fast_trot_stats["q_cmd_error_max"].append(q_cmd_error_max)
+                    fast_trot_stats["q_ref_error_max"].append(q_ref_error_max)
+                    fast_trot_stats["raw_target_rate_max"].append(_scalar(debug["raw_target_rate_max"]))
+                    fast_trot_stats["rate_clip"].append(_scalar(debug["rate_limit_clipping_ratio"]))
+                    fast_trot_stats["torque_clip"].append(_scalar(debug["torque_clipping_ratio"]))
+                    fast_trot_stats["filter_clip"].append(_scalar(debug["filter_clipping_ratio"]))
+                    fast_trot_stats["over_8"].append(_scalar(debug["over_8nm_cmd_ratio"]))
+                    fast_trot_stats["over_10"].append(_scalar(debug["over_10nm_ratio"]))
+                    fast_trot_stats["over_12"].append(_scalar(debug["over_12nm_cmd_ratio"]))
+                    fast_trot_stats["over_17"].append(_scalar(debug["over_17nm_cmd_ratio"]))
+                    fast_trot_stats["base_height"].append(_scalar(debug["base_height"]))
+                    fast_trot_stats["force_sum"].append(force_sum)
+                    fast_trot_stats["contact_count"].append(float(contact_count))
+                    for leg_index, force in enumerate(foot_forces):
+                        fast_trot_force_leg[leg_index].append(force)
+                    fast_trot_stats["preload_gate_max"].append(
+                        max(_row_vector(debug["preload_gate"]))
+                    )
+                    fast_trot_stats["support_preload_min"].append(
+                        min(_row_vector(debug["support_preload_delta_z"]))
+                    )
+                    fast_trot_stats["support_preload_max"].append(
+                        max(_row_vector(debug["support_preload_delta_z"]))
+                    )
+                    rpy = _row_vector(debug["base_rpy"])
+                    fast_trot_stats["roll_abs"].append(abs(rpy[0]))
+                    fast_trot_stats["pitch_abs"].append(abs(rpy[1]))
+                    fast_trot_stats["yaw_abs"].append(abs(rpy[2]))
+                    phases = _row_vector(debug["leg_phase"])
+                    swings = _row_vector(debug["swing_mask"].to(torch.float32))
+                    forces = _row_vector(debug["foot_normal_force"])
+                    for rear_index in (2, 3):
+                        if swings[rear_index] > 0.5:
+                            if 0.25 <= phases[rear_index] <= 0.70:
+                                fast_trot_stats["rear_swing_force_mid"].append(float(forces[rear_index] < 3.0))
+                            elif phases[rear_index] > 0.70:
+                                fast_trot_stats["rear_swing_force_touchdown"].append(float(forces[rear_index] < 3.0))
 
                 row = [
                     step * float(base_env.step_dt),
@@ -536,18 +935,40 @@ def main():
                     _scalar(debug["rate_limit_clipping_ratio"]),
                     _scalar(debug["acceleration_clipping_ratio"]),
                     _scalar(debug["torque_clipping_ratio"]),
+                    _scalar(debug["rate_limit_delta_max"]),
+                    _scalar(debug["accel_limit_delta_max"]),
+                    _scalar(debug["torque_clip_delta_max"]),
                     _scalar(debug["filter_clipping_ratio"]),
                     float(torch.max(torch.abs(debug["simulator_q_ref"] - debug["q_after_rate_limit"])).detach().cpu()),
                     float(torch.max(torch.abs(debug["simulator_q_ref"] - debug["q_after_torque_clip"])).detach().cpu()),
                     float(torch.max(torch.abs(debug["simulator_q_ref"] - debug["final_q_cmd"])).detach().cpu()),
+                    _scalar(debug["tau_est_raw_ref_max"]),
+                    _scalar(debug["tau_est_after_rate_max"]),
+                    _scalar(debug["tau_est_after_accel_max"]),
+                    _scalar(debug["tau_est_cmd_final_max"]),
                     _scalar(debug["tau_est_max"]),
+                    _scalar(debug["q_error_raw_ref_max"]),
                     q_error_max,
+                    q_ref_cmd_diff_max,
+                    q_cmd_error_max,
+                    q_ref_error_max,
                     int(_scalar(debug["tau_est_max"]) > 17.0),
                     _scalar(debug["tau_est_mean"]),
                     _scalar(debug["raw_target_rate_max"]),
+                    _scalar(debug["rate_demand_max"]),
+                    _scalar(debug["accel_demand_max"]),
                     _scalar(debug["over_6nm_ratio"]),
                     _scalar(debug["over_8nm_ratio"]),
                     _scalar(debug["over_10nm_ratio"]),
+                    _scalar(debug["over_12nm_ratio"]),
+                    _scalar(debug["over_17nm_ratio"]),
+                    _scalar(debug["over_8nm_raw_ratio"]),
+                    _scalar(debug["over_12nm_raw_ratio"]),
+                    _scalar(debug["over_17nm_raw_ratio"]),
+                    _scalar(debug["over_8nm_cmd_ratio"]),
+                    _scalar(debug["over_12nm_cmd_ratio"]),
+                    _scalar(debug["over_17nm_cmd_ratio"]),
+                    int(bool(_scalar(debug["joint_limit_warning"]))),
                     float(roll[0].detach().cpu()),
                     float(pitch[0].detach().cpu()),
                     float(yaw[0].detach().cpu()),
@@ -555,6 +976,11 @@ def main():
                     _row_vector(debug["base_rpy"])[0],
                     _row_vector(debug["base_rpy"])[1],
                     _row_vector(debug["base_rpy"])[2],
+                    abs(_row_vector(debug["base_rpy"])[0]),
+                    abs(_row_vector(debug["base_rpy"])[1]),
+                    abs(_row_vector(debug["base_rpy"])[2]),
+                    force_sum,
+                    contact_count,
                     _scalar(debug["target_leg_unload_delta_z"]),
                     _row_vector(debug["body_shift_xy"])[0],
                     _row_vector(debug["body_shift_xy"])[1],
@@ -605,9 +1031,26 @@ def main():
                 row += _row_vector(debug["q_after_delay"])
                 row += _row_vector(debug["final_q_cmd"])
                 row += _row_vector(joint_pos)
+                row += _row_vector(q_ref_cmd_diff)
+                row += _row_vector(q_ref_error)
                 row += _row_vector(q_ref_error)
                 row += _row_vector(q_cmd_error)
                 row += _row_vector(debug["tau_est_per_joint"])
+                row += _row_vector(debug["tau_est_raw_ref"])
+                row += _row_vector(debug["tau_est_after_rate"])
+                row += _row_vector(debug["tau_est_after_accel"])
+                row += _row_vector(debug["tau_est_cmd_final"])
+                row += _row_vector(debug["q_error_raw_ref"])
+                row += _row_vector(debug["rate_demand"])
+                row += _row_vector(debug["accel_demand"])
+                row += _row_vector(debug["rate_limit_delta"])
+                row += _row_vector(debug["accel_limit_delta"])
+                row += _row_vector(debug["torque_clip_delta"])
+                row += _row_vector(debug["joint_limit_margin"])
+                row += _row_vector(debug["kp_actual"])
+                row += _row_vector(debug["kd_actual"])
+                row += _row_vector(debug["torque_budget_per_joint"])
+                row += _row_vector(debug["err_limit_per_joint"])
                 row += _row_vector(debug["joint_kp"])
                 row += _row_vector(debug["joint_kd"])
                 row += _row_vector(debug["raw_target_rate_per_joint"])
@@ -718,6 +1161,186 @@ def main():
             f"actual_lift={actual_lift.tolist()} "
             f"actual/predicted={lift_ratio.tolist()}"
         )
+        if mode == "fast_diagonal_trot":
+            tau = fast_trot_stats["tau_cmd_max"]
+            print(
+                "[FAST_TROT_SAFETY_SUMMARY] "
+                f"profile={safety_profile} kp={support_kp_level} "
+                f"tau_est_cmd_final_max p95/p99/max="
+                f"{_percentile(tau, 95):.2f}/{_percentile(tau, 99):.2f}/{(max(tau) if tau else float('nan')):.2f}Nm "
+                f"q_ref_cmd_diff_max p95/p99/max="
+                f"{_percentile(fast_trot_stats['q_ref_cmd_diff_max'], 95):.3f}/"
+                f"{_percentile(fast_trot_stats['q_ref_cmd_diff_max'], 99):.3f}/"
+                f"{(max(fast_trot_stats['q_ref_cmd_diff_max']) if fast_trot_stats['q_ref_cmd_diff_max'] else float('nan')):.3f}rad "
+                f"q_cmd_error_max p95/p99/max="
+                f"{_percentile(fast_trot_stats['q_cmd_error_max'], 95):.3f}/"
+                f"{_percentile(fast_trot_stats['q_cmd_error_max'], 99):.3f}/"
+                f"{(max(fast_trot_stats['q_cmd_error_max']) if fast_trot_stats['q_cmd_error_max'] else float('nan')):.3f}rad "
+                f"q_ref_error_max p95/p99/max="
+                f"{_percentile(fast_trot_stats['q_ref_error_max'], 95):.3f}/"
+                f"{_percentile(fast_trot_stats['q_ref_error_max'], 99):.3f}/"
+                f"{(max(fast_trot_stats['q_ref_error_max']) if fast_trot_stats['q_ref_error_max'] else float('nan')):.3f}rad"
+            )
+            print(
+                "[FAST_TROT_RISK_RATIOS] "
+                f"over_8/10/12/17="
+                f"{_mean(fast_trot_stats['over_8']):.3f}/"
+                f"{_mean(fast_trot_stats['over_10']):.3f}/"
+                f"{_mean(fast_trot_stats['over_12']):.3f}/"
+                f"{_mean(fast_trot_stats['over_17']):.3f} "
+                f"rate_clip={_mean(fast_trot_stats['rate_clip']):.3f} "
+                f"torque_clip={_mean(fast_trot_stats['torque_clip']):.3f} "
+                f"filter_clip={_mean(fast_trot_stats['filter_clip']):.3f} "
+                f"raw_target_rate_max p95/p99/max="
+                f"{_percentile(fast_trot_stats['raw_target_rate_max'], 95):.2f}/"
+                f"{_percentile(fast_trot_stats['raw_target_rate_max'], 99):.2f}/"
+                f"{(max(fast_trot_stats['raw_target_rate_max']) if fast_trot_stats['raw_target_rate_max'] else float('nan')):.2f}rad/s"
+            )
+            print(
+                "[FAST_TROT_BASE] "
+                f"height mean/min/p95="
+                f"{_mean(fast_trot_stats['base_height']):.3f}/"
+                f"{(min(fast_trot_stats['base_height']) if fast_trot_stats['base_height'] else float('nan')):.3f}/"
+                f"{_percentile(fast_trot_stats['base_height'], 95):.3f}m "
+                f"roll/pitch/yaw_abs_p95_deg="
+                f"{_percentile(fast_trot_stats['roll_abs'], 95) * 57.2958:.2f}/"
+                f"{_percentile(fast_trot_stats['pitch_abs'], 95) * 57.2958:.2f}/"
+                f"{_percentile(fast_trot_stats['yaw_abs'], 95) * 57.2958:.2f}"
+            )
+            contact_counts = fast_trot_stats["contact_count"]
+            print(
+                "[FAST_TROT_CONTACT_SUMMARY] "
+                f"force_sum p50/p95/p99/max="
+                f"{_percentile(fast_trot_stats['force_sum'], 50):.2f}/"
+                f"{_percentile(fast_trot_stats['force_sum'], 95):.2f}/"
+                f"{_percentile(fast_trot_stats['force_sum'], 99):.2f}/"
+                f"{(max(fast_trot_stats['force_sum']) if fast_trot_stats['force_sum'] else float('nan')):.2f}N "
+                f"contact_ratio(0/1/2/3/4)="
+                f"{_mean([float(value == 0.0) for value in contact_counts]):.3f}/"
+                f"{_mean([float(value == 1.0) for value in contact_counts]):.3f}/"
+                f"{_mean([float(value == 2.0) for value in contact_counts]):.3f}/"
+                f"{_mean([float(value == 3.0) for value in contact_counts]):.3f}/"
+                f"{_mean([float(value == 4.0) for value in contact_counts]):.3f}"
+            )
+            for leg_index, values in enumerate(fast_trot_force_leg):
+                print(
+                    "[FAST_TROT_FOOT_FORCE] "
+                    f"{LEG_NAMES[leg_index]} p95/max="
+                    f"{_percentile(values, 95):.2f}/"
+                    f"{(max(values) if values else float('nan')):.2f}N"
+                )
+            print(
+                "[FAST_TROT_PRELOAD] "
+                f"preload_gate p95/max="
+                f"{_percentile(fast_trot_stats['preload_gate_max'], 95):.3f}/"
+                f"{(max(fast_trot_stats['preload_gate_max']) if fast_trot_stats['preload_gate_max'] else float('nan')):.3f} "
+                f"support_preload_delta_z min/p95/max="
+                f"{(min(fast_trot_stats['support_preload_min']) if fast_trot_stats['support_preload_min'] else float('nan')):.4f}/"
+                f"{_percentile(fast_trot_stats['support_preload_max'], 95):.4f}/"
+                f"{(max(fast_trot_stats['support_preload_max']) if fast_trot_stats['support_preload_max'] else float('nan')):.4f}m"
+            )
+            print(
+                "[FAST_TROT_REAR_AIRBORNE] "
+                f"force<3N mid_swing={_mean(fast_trot_stats['rear_swing_force_mid']):.3f} "
+                f"touchdown_transition={_mean(fast_trot_stats['rear_swing_force_touchdown']):.3f}"
+            )
+            for joint_index in (7, 8, 10, 11):
+                values = fast_trot_tau_joint[joint_index]
+                print(
+                    "[FAST_TROT_JOINT_TAU] "
+                    f"{JOINT_NAMES[joint_index]} p95/max="
+                    f"{_percentile(values, 95):.2f}/"
+                    f"{(max(values) if values else float('nan')):.2f}Nm"
+                )
+            print("[FAST_TROT_ALL_JOINT_TAU] p95/max by joint")
+            for joint_index, values in enumerate(fast_trot_tau_joint):
+                print(
+                    f"  {JOINT_NAMES[joint_index]} "
+                    f"{_percentile(values, 95):.2f}/"
+                    f"{(max(values) if values else float('nan')):.2f}Nm"
+                )
+            if safety_profile in ("performance_soft_output", "performance_soft_output_v2"):
+                baseline_path = output_path.parent / "fast_diagonal_trot_balanced_mid_performance_safe_baseline.csv"
+                v1_path = output_path.parent / "fast_diagonal_trot_balanced_mid_soft_performance_soft_output.csv"
+                available = {"current": output_path}
+                if baseline_path.exists():
+                    available["baseline"] = baseline_path
+                if v1_path.exists():
+                    available["v1"] = v1_path
+                summaries = {name: _csv_summary(path) for name, path in available.items()}
+                if "baseline" in summaries:
+                    print(
+                        f"[FAST_TROT_CSV_COMPARISON] current={safety_profile} "
+                        "baseline=performance_safe"
+                    )
+                    keys = (
+                        "tau_p95",
+                        "tau_max",
+                        "diff_p95",
+                        "cmd_err_p95",
+                        "ref_err_p95",
+                        "force_p95",
+                        "force_p99",
+                        "force_max",
+                        "over_8",
+                        "over_12",
+                        "over_17",
+                        "contact_1",
+                        "contact_2",
+                        "base_min",
+                        "base_mean",
+                        "roll_p95_deg",
+                        "pitch_p95_deg",
+                        "preload_p95",
+                        "support_preload_min",
+                        "rr_thigh_p95",
+                        "rr_calf_p95",
+                        "rl_thigh_p95",
+                        "rl_calf_p95",
+                    )
+                    for key in keys:
+                        print(
+                            f"  {key}: current={summaries['current'][key]:.4f} "
+                            f"baseline={summaries['baseline'][key]:.4f} "
+                            f"delta={summaries['current'][key] - summaries['baseline'][key]:+.4f}"
+                        )
+                    if "v1" in summaries and safety_profile == "performance_soft_output_v2":
+                        print("[FAST_TROT_CSV_COMPARISON_V1] current=v2 previous=v1")
+                        for key in keys:
+                            print(
+                                f"  {key}: v2={summaries['current'][key]:.4f} "
+                                f"v1={summaries['v1'][key]:.4f} "
+                                f"delta={summaries['current'][key] - summaries['v1'][key]:+.4f}"
+                            )
+                    torque_ok = summaries["current"]["tau_p95"] < 14.0
+                    force_better_than_v1 = (
+                        "v1" in summaries
+                        and summaries["current"]["force_p95"] < summaries["v1"]["force_p95"]
+                    )
+                    contact_better_than_v1 = (
+                        "v1" in summaries
+                        and summaries["current"]["contact_1"] < summaries["v1"]["contact_1"]
+                    )
+                    close_to_ref = summaries["current"]["diff_p95"] < 0.30
+                    stable_height = summaries["current"]["base_min"] >= 0.285
+                    attitude_ok = (
+                        summaries["current"]["roll_p95_deg"] < 8.0
+                        and summaries["current"]["pitch_p95_deg"] < 8.0
+                    )
+                    print(
+                        "[FAST_TROT_CANDIDATE_JUDGMENT] "
+                        f"tau_p95_ok={int(torque_ok)} "
+                        f"force_sum_lower_than_v1={int(force_better_than_v1)} "
+                        f"one_foot_contact_lower_than_v1={int(contact_better_than_v1)} "
+                        f"q_cmd_close_to_ref={int(close_to_ref)} "
+                        f"base_height_ok={int(stable_height)} "
+                        f"attitude_ok={int(attitude_ok)}"
+                    )
+                else:
+                    print(
+                        "[FAST_TROT_CSV_COMPARISON] baseline file not found: "
+                        f"{baseline_path}. Run the performance_safe baseline command first."
+                    )
         if mode == "rear_lift_test" and rear_lift_samples > 0:
             world_lift = rear_lift_world_max - rear_lift_world_min
             airborne_ratio = rear_lift_airborne_samples / rear_lift_samples

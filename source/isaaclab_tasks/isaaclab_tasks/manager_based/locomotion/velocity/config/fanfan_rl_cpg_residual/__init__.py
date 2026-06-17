@@ -76,6 +76,7 @@ _SMALL_HIGH_FREQ_REFERENCE_TASKS = {
     "SmallHighFreq-PressSignTest": "FanfanRlCpgResidualPressSignTestEnvCfg",
     "SmallHighFreq-BodyShiftSweep": "FanfanRlCpgResidualBodyShiftSweepEnvCfg",
     "FastDiagonalTrot-Reference": "FanfanRlCpgResidualFastDiagonalTrotReferenceEnvCfg",
+    "FastDiagonalTrot-SafeReference": "FanfanRlCpgResidualFastDiagonalTrotSafeReferenceEnvCfg",
     "SmallHighFreq-Stage2-Reference": "FanfanRlCpgResidualSmallHighFreqStage2ReferenceEnvCfg",
 }
 

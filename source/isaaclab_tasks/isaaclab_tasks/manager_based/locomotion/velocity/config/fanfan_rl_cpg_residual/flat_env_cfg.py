@@ -518,7 +518,59 @@ class FanfanRlCpgResidualFastDiagonalTrotReferenceEnvCfg(
     def __post_init__(self):
         super().__post_init__()
         self.actions.joint_pos.action_mode = "fast_diagonal_trot"
+        # Mid gains are for simulation morphology checks, not hardware-default safety validation.
+        self.actions.joint_pos.fast_trot_swing_hip_kp = 50.0
+        self.actions.joint_pos.fast_trot_swing_thigh_kp = 80.0
+        self.actions.joint_pos.fast_trot_swing_calf_kp = 80.0
+        self.actions.joint_pos.fast_trot_swing_kd = 4.5
+        self.actions.joint_pos.fast_trot_support_hip_kp = 70.0
+        self.actions.joint_pos.fast_trot_support_thigh_kp = 160.0
+        self.actions.joint_pos.fast_trot_support_calf_kp = 180.0
+        self.actions.joint_pos.fast_trot_support_kd = 5.0
         self.commands.base_velocity.ranges.lin_vel_x = (0.0, 0.0)
+
+
+@configclass
+class FanfanRlCpgResidualFastDiagonalTrotSafeReferenceEnvCfg(
+    FanfanRlCpgResidualFastDiagonalTrotReferenceEnvCfg
+):
+    """FastDiagonalTrot with the deploy target filter enabled for safety-chain checks."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.actions.joint_pos.enable_deploy_target_filter = True
+        self.actions.joint_pos.enable_target_rate_limit = True
+        self.actions.joint_pos.enable_target_accel_limit = True
+        self.actions.joint_pos.enable_torque_target_limit = True
+        self.actions.joint_pos.enable_action_delay = False
+        self.actions.joint_pos.fixed_delay_steps = 0
+        self.actions.joint_pos.sim_target_rate_limit_range = (10.0, 10.0)
+        self.actions.joint_pos.sim_target_accel_limit_range = (240.0, 240.0)
+        self.actions.joint_pos.sim_torque_budget_range = (8.0, 8.0)
+        self.actions.joint_pos.sim_short_peak_torque_range = (12.0, 12.0)
+        self.actions.joint_pos.sim_short_peak_prob = 0.0
+        self.actions.joint_pos.sim_hard_torque_budget = 17.0
+        self.actions.joint_pos.sim_motor_strength_scale_range = (1.0, 1.0)
+        self.actions.joint_pos.sim_kp_scale_range = (1.0, 1.0)
+        self.actions.joint_pos.sim_kd_scale_range = (1.0, 1.0)
+        self.actions.joint_pos.hip_err_limit_mul = 1.0
+        self.actions.joint_pos.thigh_err_limit_mul = 1.0
+        self.actions.joint_pos.calf_err_limit_mul = 1.0
+        self.actions.joint_pos.hip_target_rate_mul = 1.0
+        self.actions.joint_pos.thigh_target_rate_mul = 1.0
+        self.actions.joint_pos.calf_target_rate_mul = 1.0
+        self.actions.joint_pos.hip_target_accel_mul = 1.0
+        self.actions.joint_pos.thigh_target_accel_mul = 1.0
+        self.actions.joint_pos.calf_target_accel_mul = 1.0
+        # real_safe: conservative enough to test hardware proximity without hiding Kp/err-limit mismatch.
+        self.actions.joint_pos.fast_trot_swing_hip_kp = 40.0
+        self.actions.joint_pos.fast_trot_swing_thigh_kp = 70.0
+        self.actions.joint_pos.fast_trot_swing_calf_kp = 70.0
+        self.actions.joint_pos.fast_trot_swing_kd = 4.2
+        self.actions.joint_pos.fast_trot_support_hip_kp = 60.0
+        self.actions.joint_pos.fast_trot_support_thigh_kp = 120.0
+        self.actions.joint_pos.fast_trot_support_calf_kp = 140.0
+        self.actions.joint_pos.fast_trot_support_kd = 5.0
 
 
 @configclass
