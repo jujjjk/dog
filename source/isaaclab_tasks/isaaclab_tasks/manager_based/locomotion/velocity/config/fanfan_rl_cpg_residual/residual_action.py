@@ -131,6 +131,50 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
             self.num_envs, device=self.device
         )
         self.last_guard_kp_scale = torch.zeros_like(self.processed_actions)
+        self.last_light_vmc_weight = torch.zeros(self.num_envs, 4, device=self.device)
+        self.last_light_vmc_foot_z_offset = torch.zeros(self.num_envs, 4, device=self.device)
+        self.last_light_vmc_foot_x_offset = torch.zeros(self.num_envs, 4, device=self.device)
+        self.last_light_vmc_foot_y_offset = torch.zeros(self.num_envs, 4, device=self.device)
+        self.last_light_vmc_height_corr_z = torch.zeros(self.num_envs, device=self.device)
+        self.last_light_vmc_roll_corr_z = torch.zeros(self.num_envs, device=self.device)
+        self.last_light_vmc_pitch_corr_z = torch.zeros(self.num_envs, device=self.device)
+        self.last_light_vmc_foot_x_corr = torch.zeros(self.num_envs, device=self.device)
+        self.last_light_vmc_foot_y_corr = torch.zeros(self.num_envs, device=self.device)
+        self._light_vmc_target_yaw = torch.zeros(self.num_envs, device=self.device)
+        self._light_vmc_target_yaw_valid = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.bool
+        )
+        self.last_light_yaw_error = torch.zeros(self.num_envs, device=self.device)
+        self.last_light_yaw_corr_hip_raw = torch.zeros(self.num_envs, device=self.device)
+        self.last_light_yaw_corr_hip = torch.zeros(self.num_envs, device=self.device)
+        self.last_light_yaw_hip_offset = torch.zeros(self.num_envs, 4, device=self.device)
+        self.last_light_yaw_hip_rate_limited = torch.zeros(
+            self.num_envs, 4, device=self.device
+        )
+        self.last_rear_preswing_unload_gate = torch.zeros(
+            self.num_envs, 4, device=self.device
+        )
+        self.last_rear_preswing_vmc_fade = torch.ones(
+            self.num_envs, 4, device=self.device
+        )
+        self.last_rear_preswing_unload_z_offset = torch.zeros(
+            self.num_envs, 4, device=self.device
+        )
+        self.last_rear_touchdown_vmc_ramp_weight = torch.zeros(
+            self.num_envs, 4, device=self.device
+        )
+        self.last_rear_touchdown_kp_scale = torch.ones(
+            self.num_envs, 4, device=self.device
+        )
+        self.last_phase_switch_vmc_weight_scale_applied = torch.ones(
+            self.num_envs, device=self.device
+        )
+        self.last_phase_switch_yaw_weight_scale_applied = torch.ones(
+            self.num_envs, device=self.device
+        )
+        self.last_phase_switch_kp_scale_applied = torch.ones(
+            self.num_envs, device=self.device
+        )
         self.last_debug_kp = torch.full_like(
             self.processed_actions, max(float(cfg.sim_kp), 1.0e-6)
         )
@@ -880,6 +924,234 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
         self._rear_lift_step += 1
         return q_policy
 
+    def _fast_trot_light_vmc_offsets(
+        self,
+        *,
+        swing_mask: torch.Tensor,
+        leg_phase: torch.Tensor,
+        s_stance: torch.Tensor,
+        touchdown_blend: torch.Tensor,
+        guard_strength: torch.Tensor,
+        warmup: torch.Tensor,
+        dtype: torch.dtype,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        device = self.device
+        profile = str(self.cfg.fast_trot_safety_profile)
+        enabled = bool(self.cfg.fast_trot_enable_light_vmc) or profile in (
+            "performance_soft_output_v2_light_vmc",
+            "performance_soft_output_v2_light_vmc_balance",
+            "performance_soft_output_v2_light_vmc_balance_v2",
+            "performance_soft_output_v2_light_vmc_balance_v3",
+        )
+        if not enabled:
+            self.last_light_vmc_weight.zero_()
+            self.last_light_vmc_foot_z_offset.zero_()
+            self.last_light_vmc_foot_x_offset.zero_()
+            self.last_light_vmc_foot_y_offset.zero_()
+            self.last_light_vmc_height_corr_z.zero_()
+            self.last_light_vmc_roll_corr_z.zero_()
+            self.last_light_vmc_pitch_corr_z.zero_()
+            self.last_light_vmc_foot_x_corr.zero_()
+            self.last_light_vmc_foot_y_corr.zero_()
+            self.last_light_yaw_error.zero_()
+            self.last_light_yaw_corr_hip_raw.zero_()
+            self.last_light_yaw_corr_hip.zero_()
+            self.last_light_yaw_hip_offset.zero_()
+            self.last_light_yaw_hip_rate_limited.zero_()
+            self.last_rear_preswing_unload_gate.zero_()
+            self.last_rear_preswing_vmc_fade.fill_(1.0)
+            self.last_rear_preswing_unload_z_offset.zero_()
+            self.last_rear_touchdown_vmc_ramp_weight.zero_()
+            self.last_rear_touchdown_kp_scale.fill_(1.0)
+            self.last_phase_switch_vmc_weight_scale_applied.fill_(1.0)
+            self.last_phase_switch_yaw_weight_scale_applied.fill_(1.0)
+            self.last_phase_switch_kp_scale_applied.fill_(1.0)
+            zeros = torch.zeros(self.num_envs, 4, device=device, dtype=dtype)
+            return zeros, zeros, zeros
+
+        touchdown_ramp = max(1.0e-6, float(self.cfg.light_vmc_touchdown_ramp))
+        rear_touchdown_ramp = max(1.0e-6, float(self.cfg.rear_touchdown_vmc_ramp))
+        preswing_ramp = max(1.0e-6, float(self.cfg.light_vmc_preswing_ramp))
+        early_weight = self.reference._smootherstep01(torch.clamp(s_stance / touchdown_ramp, 0.0, 1.0))
+        rear_early_weight = self.reference._smootherstep01(
+            torch.clamp(s_stance / rear_touchdown_ramp, 0.0, 1.0)
+        )
+        rear_mask = torch.tensor((0.0, 0.0, 1.0, 1.0), device=device, dtype=dtype).unsqueeze(0)
+        early_weight = early_weight * (1.0 - rear_mask) + rear_early_weight * rear_mask
+        preswing_weight = self.reference._smootherstep01(torch.clamp((1.0 - s_stance) / preswing_ramp, 0.0, 1.0))
+        stance_weight = (0.5 + 0.5 * early_weight) * preswing_weight * (~swing_mask).to(dtype)
+        swing_touchdown_weight = 0.5 * touchdown_blend
+        vmc_weight = torch.clamp(
+            (stance_weight + swing_touchdown_weight)
+            * float(self.cfg.light_vmc_max_weight)
+            * warmup.unsqueeze(1),
+            0.0,
+            float(self.cfg.light_vmc_max_weight),
+        )
+        if guard_strength.numel() > 0:
+            scale = 1.0 - guard_strength.unsqueeze(1) * (1.0 - float(self.cfg.light_vmc_phase_switch_weight_scale))
+            vmc_weight *= scale
+            self.last_phase_switch_vmc_weight_scale_applied[:] = torch.squeeze(scale[:, :1], dim=1)
+        else:
+            self.last_phase_switch_vmc_weight_scale_applied.fill_(1.0)
+        if bool(self.cfg.rear_preswing_unload_enable):
+            preswing_window = max(1.0e-6, float(self.cfg.rear_preswing_unload_window))
+            fade_window = max(1.0e-6, float(self.cfg.rear_preswing_vmc_fade_window))
+            rear_preswing_gate = self.reference._smootherstep01(
+                torch.clamp((leg_phase - (1.0 - preswing_window)) / preswing_window, 0.0, 1.0)
+            )
+            rear_preswing_gate = rear_preswing_gate * rear_mask * (~swing_mask).to(dtype)
+            rear_fade = 1.0 - self.reference._smootherstep01(
+                torch.clamp((leg_phase - (1.0 - fade_window)) / fade_window, 0.0, 1.0)
+            )
+            rear_fade = rear_fade * rear_mask + (1.0 - rear_mask)
+            rear_fade = torch.where(swing_mask, torch.ones_like(rear_fade), rear_fade)
+            vmc_weight *= rear_fade
+        else:
+            rear_preswing_gate = torch.zeros(self.num_envs, 4, device=device, dtype=dtype)
+            rear_fade = torch.ones(self.num_envs, 4, device=device, dtype=dtype)
+        self.last_rear_preswing_unload_gate[:] = rear_preswing_gate
+        self.last_rear_preswing_vmc_fade[:] = rear_fade
+        self.last_rear_touchdown_vmc_ramp_weight[:] = early_weight * rear_mask
+
+        base_roll, base_pitch, base_yaw = euler_xyz_from_quat(self._asset.data.root_quat_w)
+        base_lin_vel = self._asset.data.root_lin_vel_b
+        base_ang_vel = self._asset.data.root_ang_vel_b
+        height_corr = float(self.cfg.light_vmc_height_kp_z) * (
+            float(self.cfg.light_vmc_target_base_height) - self._asset.data.root_pos_w[:, 2]
+        )
+        height_corr -= float(self.cfg.light_vmc_height_kd_z) * base_lin_vel[:, 2]
+        height_corr = torch.clamp(
+            height_corr,
+            -float(self.cfg.light_vmc_height_corr_limit_m),
+            float(self.cfg.light_vmc_height_corr_limit_m),
+        )
+        roll_corr = float(self.cfg.light_vmc_roll_kp_z) * (
+            base_roll - float(self.cfg.light_vmc_target_roll)
+        )
+        roll_corr += float(self.cfg.light_vmc_roll_kd_z) * base_ang_vel[:, 0]
+        roll_corr = torch.clamp(
+            roll_corr,
+            -float(self.cfg.light_vmc_roll_corr_limit_m),
+            float(self.cfg.light_vmc_roll_corr_limit_m),
+        )
+        pitch_corr = float(self.cfg.light_vmc_pitch_kp_z) * (
+            base_pitch - float(self.cfg.light_vmc_target_pitch)
+        )
+        pitch_corr += float(self.cfg.light_vmc_pitch_kd_z) * base_ang_vel[:, 1]
+        pitch_corr = torch.clamp(
+            pitch_corr,
+            -float(self.cfg.light_vmc_pitch_corr_limit_m),
+            float(self.cfg.light_vmc_pitch_corr_limit_m),
+        )
+        side = torch.tensor((-1.0, 1.0, -1.0, 1.0), device=device, dtype=dtype)
+        fore_aft = torch.tensor((1.0, 1.0, -1.0, -1.0), device=device, dtype=dtype)
+        z_raw = (
+            float(self.cfg.light_vmc_z_sign) * height_corr.unsqueeze(1)
+            + side.unsqueeze(0) * float(self.cfg.light_vmc_roll_sign) * roll_corr.unsqueeze(1)
+            + fore_aft.unsqueeze(0) * float(self.cfg.light_vmc_pitch_sign) * pitch_corr.unsqueeze(1)
+        ) * vmc_weight
+
+        if bool(self.cfg.light_vmc_enable_foot_placement):
+            x_corr = float(self.cfg.light_vmc_vx_foot_k) * base_lin_vel[:, 0]
+            x_corr += float(self.cfg.light_vmc_pitch_rate_foot_x_k) * base_ang_vel[:, 1]
+            y_corr = float(self.cfg.light_vmc_vy_foot_k) * base_lin_vel[:, 1]
+            y_corr += float(self.cfg.light_vmc_roll_rate_foot_y_k) * base_ang_vel[:, 0]
+            x_corr = torch.clamp(
+                x_corr,
+                -float(self.cfg.light_vmc_foot_x_corr_limit_m),
+                float(self.cfg.light_vmc_foot_x_corr_limit_m),
+            )
+            y_corr = torch.clamp(
+                y_corr,
+                -float(self.cfg.light_vmc_foot_y_corr_limit_m),
+                float(self.cfg.light_vmc_foot_y_corr_limit_m),
+            )
+        else:
+            x_corr = torch.zeros(self.num_envs, device=device, dtype=dtype)
+            y_corr = torch.zeros_like(x_corr)
+        x_raw = x_corr.unsqueeze(1) * vmc_weight
+        y_raw = y_corr.unsqueeze(1) * vmc_weight
+
+        z_limit = float(self.cfg.light_vmc_z_offset_rate_limit_m)
+        xy_limit = float(self.cfg.light_vmc_xy_offset_rate_limit_m)
+        z_offset = self.last_light_vmc_foot_z_offset + torch.clamp(
+            z_raw - self.last_light_vmc_foot_z_offset,
+            min=-z_limit,
+            max=z_limit,
+        )
+        x_offset = self.last_light_vmc_foot_x_offset + torch.clamp(
+            x_raw - self.last_light_vmc_foot_x_offset,
+            min=-xy_limit,
+            max=xy_limit,
+        )
+        y_offset = self.last_light_vmc_foot_y_offset + torch.clamp(
+            y_raw - self.last_light_vmc_foot_y_offset,
+            min=-xy_limit,
+            max=xy_limit,
+        )
+        self.last_light_vmc_weight[:] = vmc_weight
+        self.last_light_vmc_foot_z_offset[:] = z_offset
+        self.last_light_vmc_foot_x_offset[:] = x_offset
+        self.last_light_vmc_foot_y_offset[:] = y_offset
+        self.last_light_vmc_height_corr_z[:] = height_corr
+        self.last_light_vmc_roll_corr_z[:] = roll_corr
+        self.last_light_vmc_pitch_corr_z[:] = pitch_corr
+        self.last_light_vmc_foot_x_corr[:] = x_corr
+        self.last_light_vmc_foot_y_corr[:] = y_corr
+        if bool(self.cfg.enable_light_yaw_damping):
+            invalid_yaw = ~self._light_vmc_target_yaw_valid
+            if torch.any(invalid_yaw):
+                self._light_vmc_target_yaw[invalid_yaw] = base_yaw[invalid_yaw]
+                self._light_vmc_target_yaw_valid[invalid_yaw] = True
+            yaw_error = torch.atan2(
+                torch.sin(base_yaw - self._light_vmc_target_yaw),
+                torch.cos(base_yaw - self._light_vmc_target_yaw),
+            )
+            yaw_corr = float(self.cfg.light_yaw_kp_hip) * yaw_error
+            yaw_corr += float(self.cfg.light_yaw_kd_hip) * base_ang_vel[:, 2]
+            yaw_corr = torch.clamp(
+                yaw_corr,
+                -float(self.cfg.light_yaw_hip_limit_rad),
+                float(self.cfg.light_yaw_hip_limit_rad),
+            )
+            yaw_raw_corr = yaw_corr.clone()
+            if guard_strength.numel() > 0:
+                yaw_guard_scale = 1.0 - guard_strength * (
+                    1.0 - float(self.cfg.light_yaw_phase_switch_weight_scale)
+                )
+                yaw_corr = yaw_corr * yaw_guard_scale
+                self.last_phase_switch_yaw_weight_scale_applied[:] = yaw_guard_scale
+            else:
+                self.last_phase_switch_yaw_weight_scale_applied.fill_(1.0)
+            side = torch.tensor((-1.0, 1.0, -1.0, 1.0), device=device, dtype=dtype)
+            yaw_raw = (
+                side.unsqueeze(0)
+                * float(self.cfg.light_yaw_sign)
+                * yaw_corr.unsqueeze(1)
+                * vmc_weight
+                * warmup.unsqueeze(1)
+            )
+            yaw_limit = float(self.cfg.light_yaw_hip_rate_limit_rad)
+            yaw_offset = self.last_light_yaw_hip_offset + torch.clamp(
+                yaw_raw - self.last_light_yaw_hip_offset,
+                min=-yaw_limit,
+                max=yaw_limit,
+            )
+            self.last_light_yaw_error[:] = yaw_error
+            self.last_light_yaw_corr_hip_raw[:] = yaw_raw_corr
+            self.last_light_yaw_corr_hip[:] = yaw_corr
+            self.last_light_yaw_hip_rate_limited[:] = yaw_offset - self.last_light_yaw_hip_offset
+            self.last_light_yaw_hip_offset[:] = yaw_offset
+        else:
+            self.last_light_yaw_error.zero_()
+            self.last_light_yaw_corr_hip_raw.zero_()
+            self.last_light_yaw_corr_hip.zero_()
+            self.last_light_yaw_hip_rate_limited.zero_()
+            self.last_light_yaw_hip_offset.zero_()
+            self.last_phase_switch_yaw_weight_scale_applied.fill_(1.0)
+        return x_offset, y_offset, z_offset
+
     def _fast_diagonal_trot_target(self) -> torch.Tensor:
         q_policy = self.reference.default_joint_pos.clone()
         dt = float(self._env.step_dt)
@@ -934,7 +1206,13 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
         guard_strength = self.reference._smootherstep01(
             torch.clamp((guard_window - phase_to_switch) / guard_window, 0.0, 1.0)
         )
-        if str(self.cfg.fast_trot_safety_profile) != "performance_soft_output_v2_small_fix":
+        if str(self.cfg.fast_trot_safety_profile) not in (
+            "performance_soft_output_v2_small_fix",
+            "performance_soft_output_v2_light_vmc",
+            "performance_soft_output_v2_light_vmc_balance",
+            "performance_soft_output_v2_light_vmc_balance_v2",
+            "performance_soft_output_v2_light_vmc_balance_v3",
+        ):
             guard_strength.zero_()
         self.last_phase_to_switch[:] = phase_to_switch
         self.last_phase_switch_guard_strength[:] = guard_strength
@@ -988,6 +1266,10 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
             "performance_soft_output",
             "performance_soft_output_v2",
             "performance_soft_output_v2_small_fix",
+            "performance_soft_output_v2_light_vmc",
+            "performance_soft_output_v2_light_vmc_balance",
+            "performance_soft_output_v2_light_vmc_balance_v2",
+            "performance_soft_output_v2_light_vmc_balance_v3",
         )
         if profile in soft_output_profiles:
             ramp_in = max(1.0e-6, float(self.cfg.fast_trot_support_preload_ramp_in_phase))
@@ -995,13 +1277,27 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
             ramp_in_gate = self.reference._smootherstep01(torch.clamp(s_stance / ramp_in, 0.0, 1.0))
             ramp_out_gate = self.reference._smootherstep01(torch.clamp((1.0 - s_stance) / ramp_out, 0.0, 1.0))
             preload_gate = ramp_in_gate * ramp_out_gate * (~swing_mask).to(dtype)
-            if profile in ("performance_soft_output_v2", "performance_soft_output_v2_small_fix"):
+            if profile in (
+                "performance_soft_output_v2",
+                "performance_soft_output_v2_small_fix",
+                "performance_soft_output_v2_light_vmc",
+                "performance_soft_output_v2_light_vmc_balance",
+                "performance_soft_output_v2_light_vmc_balance_v2",
+                "performance_soft_output_v2_light_vmc_balance_v3",
+            ):
                 preload_gate = torch.clamp(
                     preload_gate,
                     max=float(self.cfg.fast_trot_support_preload_gate_max),
                 )
             support_preload_gate = torch.maximum(preload_gate, touchdown_blend)
-            if profile in ("performance_soft_output_v2", "performance_soft_output_v2_small_fix"):
+            if profile in (
+                "performance_soft_output_v2",
+                "performance_soft_output_v2_small_fix",
+                "performance_soft_output_v2_light_vmc",
+                "performance_soft_output_v2_light_vmc_balance",
+                "performance_soft_output_v2_light_vmc_balance_v2",
+                "performance_soft_output_v2_light_vmc_balance_v3",
+            ):
                 support_preload_gate = torch.clamp(
                     support_preload_gate,
                     max=float(self.cfg.fast_trot_support_preload_gate_max),
@@ -1033,9 +1329,30 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
         else:
             z_touchdown = torch.where(touchdown_blend > 0.0, z_stance, z_swing)
         z_target = torch.where(swing_mask, z_touchdown, z_stance)
+        vmc_x_offset, vmc_y_offset, vmc_z_offset = self._fast_trot_light_vmc_offsets(
+            swing_mask=swing_mask,
+            leg_phase=leg_phase,
+            s_stance=s_stance,
+            touchdown_blend=touchdown_blend,
+            guard_strength=guard_strength,
+            warmup=warmup,
+            dtype=dtype,
+        )
+        rear_unload_offset = (
+            float(self.cfg.rear_unload_sign)
+            * float(self.cfg.rear_preswing_unload_z_m)
+            * self.last_rear_preswing_unload_gate
+            * warmup.unsqueeze(1)
+        )
+        self.last_rear_preswing_unload_z_offset[:] = rear_unload_offset
+        x_target = x_target + vmc_x_offset
+        z_target = z_target + vmc_z_offset + rear_unload_offset
         thigh_target, calf_target = self.reference._inverse_sagittal(x_target, z_target)
         q_policy[:, 1::3] = thigh_target
         q_policy[:, 2::3] = calf_target
+        leg_length = torch.clamp(torch.abs(z_default), min=0.15)
+        q_policy[:, 0::3] += -vmc_y_offset / leg_length
+        q_policy[:, 0::3] += self.last_light_yaw_hip_offset
 
         self._apply_fast_trot_gains(
             swing_mask,
@@ -1127,6 +1444,8 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
         )
         profile = str(self.cfg.fast_trot_safety_profile)
         self.last_guard_kp_scale.zero_()
+        self.last_rear_touchdown_kp_scale.fill_(1.0)
+        self.last_phase_switch_kp_scale_applied.fill_(1.0)
         for leg_index in range(4):
             cols = slice(leg_index * 3, leg_index * 3 + 3)
             leg_swing = swing_mask[:, leg_index].unsqueeze(1)
@@ -1134,6 +1453,10 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
                 "performance_soft_output",
                 "performance_soft_output_v2",
                 "performance_soft_output_v2_small_fix",
+                "performance_soft_output_v2_light_vmc",
+                "performance_soft_output_v2_light_vmc_balance",
+                "performance_soft_output_v2_light_vmc_balance_v2",
+                "performance_soft_output_v2_light_vmc_balance_v3",
             ) and touchdown_blend is not None and early_stance_gate is not None:
                 touchdown = touchdown_blend[:, leg_index].unsqueeze(1)
                 early = early_stance_gate[:, leg_index].unsqueeze(1)
@@ -1144,10 +1467,39 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
                 if preload_gate is not None:
                     preload = preload_gate[:, leg_index].unsqueeze(1) * stance
                     leg_kp = leg_kp * (1.0 - preload) + support_kp.unsqueeze(0) * preload
-                if phase_switch_guard_strength is not None:
+                if phase_switch_guard_strength is not None and profile in (
+                    "performance_soft_output_v2_small_fix",
+                    "performance_soft_output_v2_light_vmc_balance_v3",
+                ):
                     guard = phase_switch_guard_strength.unsqueeze(1) * stance
                     leg_kp = leg_kp * (1.0 - guard) + guard_kp.unsqueeze(0) * guard
                     self.last_guard_kp_scale[:, cols] = guard.expand(-1, 3)
+                    self.last_phase_switch_kp_scale_applied[:] = 1.0 - phase_switch_guard_strength * (
+                        1.0 - float(self.cfg.fast_trot_phase_switch_kp_scale)
+                    )
+                if profile == "performance_soft_output_v2_light_vmc_balance_v3" and leg_index >= 2:
+                    rear_touchdown = torch.maximum(touchdown, early)
+                    rear_touchdown = rear_touchdown * torch.clamp(
+                        (~leg_swing).to(dtype) + touchdown, 0.0, 1.0
+                    )
+                    rear_limit_kp = torch.tensor(
+                        (
+                            float(self.cfg.fast_trot_touchdown_hip_kp),
+                            float(self.cfg.rear_touchdown_thigh_kp_limit),
+                            float(self.cfg.rear_touchdown_calf_kp_limit),
+                        ),
+                        device=self.device,
+                        dtype=dtype,
+                    ).unsqueeze(0)
+                    rear_soft_kp = torch.minimum(
+                        leg_kp * float(self.cfg.rear_touchdown_kp_scale),
+                        rear_limit_kp,
+                    )
+                    leg_kp = leg_kp * (1.0 - rear_touchdown) + rear_soft_kp * rear_touchdown
+                    self.last_rear_touchdown_kp_scale[:, leg_index] = torch.squeeze(
+                        1.0 - rear_touchdown * (1.0 - float(self.cfg.rear_touchdown_kp_scale)),
+                        dim=1,
+                    )
                 leg_kd = torch.full((self.num_envs, 3), float(self.cfg.fast_trot_support_kd), device=self.device, dtype=dtype)
                 leg_kd = torch.where(
                     leg_swing,
@@ -1156,7 +1508,13 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
                 )
                 leg_kd = leg_kd * (1.0 - touchdown) + float(self.cfg.fast_trot_touchdown_kd) * touchdown
                 leg_kd = leg_kd * (1.0 - early) + float(self.cfg.fast_trot_early_stance_kd) * early
-                if phase_switch_guard_strength is not None:
+                if profile == "performance_soft_output_v2_light_vmc_balance_v3" and leg_index >= 2:
+                    rear_touchdown = torch.maximum(touchdown, early)
+                    leg_kd = leg_kd * (1.0 - rear_touchdown) + float(self.cfg.rear_touchdown_kd) * rear_touchdown
+                if phase_switch_guard_strength is not None and profile in (
+                    "performance_soft_output_v2_small_fix",
+                    "performance_soft_output_v2_light_vmc_balance_v3",
+                ):
                     guard = phase_switch_guard_strength.unsqueeze(1) * stance
                     leg_kd = leg_kd * (1.0 - guard) + float(self.cfg.fast_trot_phase_switch_guard_kd) * guard
                 kp[:, cols] = leg_kp
@@ -1310,6 +1668,10 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
             "performance_soft_output",
             "performance_soft_output_v2",
             "performance_soft_output_v2_small_fix",
+            "performance_soft_output_v2_light_vmc",
+            "performance_soft_output_v2_light_vmc_balance",
+            "performance_soft_output_v2_light_vmc_balance_v2",
+            "performance_soft_output_v2_light_vmc_balance_v3",
         ):
             limit_budget = torch.full_like(torque_budget, float(self.cfg.sim_hard_torque_budget))
         else:
@@ -1333,6 +1695,10 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
                 "performance_soft_output",
                 "performance_soft_output_v2",
                 "performance_soft_output_v2_small_fix",
+                "performance_soft_output_v2_light_vmc",
+                "performance_soft_output_v2_light_vmc_balance",
+                "performance_soft_output_v2_light_vmc_balance_v2",
+                "performance_soft_output_v2_light_vmc_balance_v3",
             ):
                 max_step = rate_limit * dt
                 target_step = q_raw - self._q_last_cmd
@@ -1376,14 +1742,26 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
                 "performance_soft_output",
                 "performance_soft_output_v2",
                 "performance_soft_output_v2_small_fix",
+                "performance_soft_output_v2_light_vmc",
+                "performance_soft_output_v2_light_vmc_balance",
+                "performance_soft_output_v2_light_vmc_balance_v2",
+                "performance_soft_output_v2_light_vmc_balance_v3",
             ):
+                guard_for_torque = (
+                    self.last_phase_switch_guard_strength
+                    if profile in (
+                        "performance_soft_output_v2_small_fix",
+                        "performance_soft_output_v2_light_vmc_balance_v3",
+                    )
+                    else None
+                )
                 q_after_torque = self._performance_soft_output_torque_target(
                     q_after_accel,
                     q_current,
                     q_raw,
                     kp_eff,
                     kd_eff,
-                    guard_strength=self.last_phase_switch_guard_strength,
+                    guard_strength=guard_for_torque,
                 )
             else:
                 q_after_torque = q_current + torch.clamp(
@@ -1501,6 +1879,30 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
         self.last_phase_switch_guard_strength[env_ids] = 0.0
         self.last_phase_to_switch[env_ids] = 0.0
         self.last_guard_kp_scale[env_ids] = 0.0
+        self.last_light_vmc_weight[env_ids] = 0.0
+        self.last_light_vmc_foot_z_offset[env_ids] = 0.0
+        self.last_light_vmc_foot_x_offset[env_ids] = 0.0
+        self.last_light_vmc_foot_y_offset[env_ids] = 0.0
+        self.last_light_vmc_height_corr_z[env_ids] = 0.0
+        self.last_light_vmc_roll_corr_z[env_ids] = 0.0
+        self.last_light_vmc_pitch_corr_z[env_ids] = 0.0
+        self.last_light_vmc_foot_x_corr[env_ids] = 0.0
+        self.last_light_vmc_foot_y_corr[env_ids] = 0.0
+        self._light_vmc_target_yaw[env_ids] = 0.0
+        self._light_vmc_target_yaw_valid[env_ids] = False
+        self.last_light_yaw_error[env_ids] = 0.0
+        self.last_light_yaw_corr_hip_raw[env_ids] = 0.0
+        self.last_light_yaw_corr_hip[env_ids] = 0.0
+        self.last_light_yaw_hip_offset[env_ids] = 0.0
+        self.last_light_yaw_hip_rate_limited[env_ids] = 0.0
+        self.last_rear_preswing_unload_gate[env_ids] = 0.0
+        self.last_rear_preswing_vmc_fade[env_ids] = 1.0
+        self.last_rear_preswing_unload_z_offset[env_ids] = 0.0
+        self.last_rear_touchdown_vmc_ramp_weight[env_ids] = 0.0
+        self.last_rear_touchdown_kp_scale[env_ids] = 1.0
+        self.last_phase_switch_vmc_weight_scale_applied[env_ids] = 1.0
+        self.last_phase_switch_yaw_weight_scale_applied[env_ids] = 1.0
+        self.last_phase_switch_kp_scale_applied[env_ids] = 1.0
         self.last_debug_kp[env_ids] = max(float(self.cfg.sim_kp), 1.0e-6)
         self.last_debug_kd[env_ids] = max(float(self.cfg.sim_kd), 0.0)
         self.last_body_shift_xy[env_ids] = 0.0
@@ -1673,7 +2075,101 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
                 "phase_switch_guard_active": self.last_phase_switch_guard_strength > 1.0e-6,
                 "phase_switch_guard_strength": self.last_phase_switch_guard_strength,
                 "phase_to_switch": self.last_phase_to_switch,
+                "phase_switch_vmc_weight_scale_applied": self.last_phase_switch_vmc_weight_scale_applied,
+                "phase_switch_yaw_weight_scale_applied": self.last_phase_switch_yaw_weight_scale_applied,
+                "phase_switch_kp_scale_applied": self.last_phase_switch_kp_scale_applied,
                 "guard_kp_scale": self.last_guard_kp_scale,
+                "light_vmc_enabled": torch.full(
+                    (self.num_envs,),
+                    bool(self.cfg.fast_trot_enable_light_vmc)
+                    or str(self.cfg.fast_trot_safety_profile) in (
+                        "performance_soft_output_v2_light_vmc",
+                        "performance_soft_output_v2_light_vmc_balance",
+                        "performance_soft_output_v2_light_vmc_balance_v2",
+                    ),
+                    device=self.device,
+                    dtype=torch.bool,
+                ),
+                "light_vmc_foot_placement_enabled": torch.full(
+                    (self.num_envs,),
+                    bool(self.cfg.light_vmc_enable_foot_placement),
+                    device=self.device,
+                    dtype=torch.bool,
+                ),
+                "light_vmc_height_sign": torch.full(
+                    (self.num_envs,),
+                    float(self.cfg.light_vmc_z_sign),
+                    device=self.device,
+                ),
+                "light_vmc_roll_sign": torch.full(
+                    (self.num_envs,),
+                    float(self.cfg.light_vmc_roll_sign),
+                    device=self.device,
+                ),
+                "light_vmc_pitch_sign": torch.full(
+                    (self.num_envs,),
+                    float(self.cfg.light_vmc_pitch_sign),
+                    device=self.device,
+                ),
+                "light_vmc_target_base_height": torch.full(
+                    (self.num_envs,),
+                    float(self.cfg.light_vmc_target_base_height),
+                    device=self.device,
+                ),
+                "light_vmc_target_roll": torch.full(
+                    (self.num_envs,),
+                    float(self.cfg.light_vmc_target_roll),
+                    device=self.device,
+                ),
+                "light_vmc_target_pitch": torch.full(
+                    (self.num_envs,),
+                    float(self.cfg.light_vmc_target_pitch),
+                    device=self.device,
+                ),
+                "light_yaw_damping_enabled": torch.full(
+                    (self.num_envs,),
+                    bool(self.cfg.enable_light_yaw_damping),
+                    device=self.device,
+                    dtype=torch.bool,
+                ),
+                "light_yaw_sign": torch.full(
+                    (self.num_envs,),
+                    float(self.cfg.light_yaw_sign),
+                    device=self.device,
+                ),
+                "light_yaw_target": self._light_vmc_target_yaw,
+                "light_yaw_error": self.last_light_yaw_error,
+                "light_yaw_corr_hip_raw": self.last_light_yaw_corr_hip_raw,
+                "light_yaw_corr_hip": self.last_light_yaw_corr_hip,
+                "yaw_hip_offset": self.last_light_yaw_hip_offset,
+                "yaw_hip_rate_limited": self.last_light_yaw_hip_rate_limited,
+                "rear_preswing_unload_enabled": torch.full(
+                    (self.num_envs,),
+                    bool(self.cfg.rear_preswing_unload_enable),
+                    device=self.device,
+                    dtype=torch.bool,
+                ),
+                "rear_unload_sign": torch.full(
+                    (self.num_envs,),
+                    float(self.cfg.rear_unload_sign),
+                    device=self.device,
+                ),
+                "rear_preswing_unload_gate": self.last_rear_preswing_unload_gate,
+                "rear_preswing_vmc_fade": self.last_rear_preswing_vmc_fade,
+                "rear_preswing_unload_z_offset": self.last_rear_preswing_unload_z_offset,
+                "rear_touchdown_vmc_ramp_weight": self.last_rear_touchdown_vmc_ramp_weight,
+                "rear_touchdown_kp_scale": self.last_rear_touchdown_kp_scale,
+                "vmc_weight": self.last_light_vmc_weight,
+                "vmc_height_corr_z": self.last_light_vmc_height_corr_z,
+                "vmc_roll_corr_z": self.last_light_vmc_roll_corr_z,
+                "vmc_pitch_corr_z": self.last_light_vmc_pitch_corr_z,
+                "vmc_foot_x_corr": self.last_light_vmc_foot_x_corr,
+                "vmc_foot_y_corr": self.last_light_vmc_foot_y_corr,
+                "vmc_foot_z_offset": self.last_light_vmc_foot_z_offset,
+                "vmc_foot_x_offset": self.last_light_vmc_foot_x_offset,
+                "vmc_foot_y_offset": self.last_light_vmc_foot_y_offset,
+                "base_lin_vel": self._asset.data.root_lin_vel_b,
+                "base_ang_vel": self._asset.data.root_ang_vel_b,
                 "global_support_height_offset_m": torch.full(
                     (self.num_envs,),
                     float(self.cfg.fast_trot_global_support_height_offset_m),
@@ -1773,6 +2269,7 @@ class WaveResidualJointPositionActionCfg(DeployFilteredJointPositionActionCfg):
     fast_trot_phase_switch_guard_thigh_kp: float = 125.0
     fast_trot_phase_switch_guard_calf_kp: float = 135.0
     fast_trot_phase_switch_guard_kd: float = 6.2
+    fast_trot_phase_switch_kp_scale: float = 0.75
     fast_trot_support_hip_kp: float = 70.0
     fast_trot_support_thigh_kp: float = 180.0
     fast_trot_support_calf_kp: float = 200.0
@@ -1785,6 +2282,53 @@ class WaveResidualJointPositionActionCfg(DeployFilteredJointPositionActionCfg):
     fast_trot_guard_soft_start_torque: float = 9.5
     fast_trot_guard_soft_full_torque: float = 13.5
     fast_trot_soft_output_max_ref_cmd_error_rad: float = 0.50
+    fast_trot_enable_light_vmc: bool = False
+    light_vmc_target_base_height: float = 0.290
+    light_vmc_target_roll: float = 0.0
+    light_vmc_target_pitch: float = 0.0
+    light_vmc_height_kp_z: float = 0.45
+    light_vmc_height_kd_z: float = 0.06
+    light_vmc_height_corr_limit_m: float = 0.005
+    light_vmc_roll_kp_z: float = 0.030
+    light_vmc_roll_kd_z: float = 0.006
+    light_vmc_roll_corr_limit_m: float = 0.004
+    light_vmc_pitch_kp_z: float = 0.035
+    light_vmc_pitch_kd_z: float = 0.006
+    light_vmc_pitch_corr_limit_m: float = 0.004
+    light_vmc_z_sign: float = 1.0
+    light_vmc_roll_sign: float = 1.0
+    light_vmc_pitch_sign: float = 1.0
+    light_vmc_touchdown_ramp: float = 0.12
+    light_vmc_preswing_ramp: float = 0.12
+    light_vmc_max_weight: float = 1.0
+    light_vmc_phase_switch_weight_scale: float = 0.6
+    light_vmc_z_offset_rate_limit_m: float = 0.001
+    light_vmc_xy_offset_rate_limit_m: float = 0.001
+    light_vmc_enable_foot_placement: bool = True
+    light_vmc_vx_foot_k: float = 0.025
+    light_vmc_vy_foot_k: float = 0.020
+    light_vmc_pitch_rate_foot_x_k: float = 0.005
+    light_vmc_roll_rate_foot_y_k: float = 0.005
+    light_vmc_foot_x_corr_limit_m: float = 0.006
+    light_vmc_foot_y_corr_limit_m: float = 0.004
+    enable_light_yaw_damping: bool = False
+    light_yaw_kp_hip: float = 0.004
+    light_yaw_kd_hip: float = 0.010
+    light_yaw_hip_limit_rad: float = 0.010
+    light_yaw_hip_rate_limit_rad: float = 0.002
+    light_yaw_phase_switch_weight_scale: float = 0.40
+    light_yaw_sign: float = 1.0
+    rear_preswing_unload_enable: bool = False
+    rear_preswing_unload_window: float = 0.14
+    rear_preswing_unload_z_m: float = 0.003
+    rear_preswing_vmc_fade_window: float = 0.14
+    rear_unload_sign: float = 1.0
+    rear_touchdown_vmc_ramp: float = 0.16
+    rear_touchdown_kp_ramp: float = 0.18
+    rear_touchdown_kp_scale: float = 0.75
+    rear_touchdown_thigh_kp_limit: float = 125.0
+    rear_touchdown_calf_kp_limit: float = 135.0
+    rear_touchdown_kd: float = 6.2
     sim_hard_torque_budget: float = 17.0
     joint_limit_warning_margin_rad: float = 0.02
     joint_limit_warning_interval_sec: float = 1.0

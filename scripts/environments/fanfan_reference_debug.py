@@ -60,6 +60,10 @@ parser.add_argument(
         "performance_soft_output",
         "performance_soft_output_v2",
         "performance_soft_output_v2_small_fix",
+        "performance_soft_output_v2_light_vmc",
+        "performance_soft_output_v2_light_vmc_balance",
+        "performance_soft_output_v2_light_vmc_balance_v2",
+        "performance_soft_output_v2_light_vmc_balance_v3",
         "real_safe",
     ),
     default="monitor_only",
@@ -322,6 +326,10 @@ def main():
                     "performance_soft_output",
                     "performance_soft_output_v2",
                     "performance_soft_output_v2_small_fix",
+                    "performance_soft_output_v2_light_vmc",
+                    "performance_soft_output_v2_light_vmc_balance",
+                    "performance_soft_output_v2_light_vmc_balance_v2",
+                    "performance_soft_output_v2_light_vmc_balance_v3",
                 )
                 else "mid"
             )
@@ -358,7 +366,14 @@ def main():
                 "support": (70.0, 220.0, 220.0, 5.0),
             },
         }
-        if safety_profile in ("performance_soft_output_v2", "performance_soft_output_v2_small_fix") and kp_level == "mid_soft":
+        if safety_profile in (
+            "performance_soft_output_v2",
+            "performance_soft_output_v2_small_fix",
+            "performance_soft_output_v2_light_vmc",
+            "performance_soft_output_v2_light_vmc_balance",
+            "performance_soft_output_v2_light_vmc_balance_v2",
+            "performance_soft_output_v2_light_vmc_balance_v3",
+        ) and kp_level == "mid_soft":
             kp_profiles["mid_soft"] = {
                 "swing": (50.0, 80.0, 80.0, 5.0),
                 "touchdown": (55.0, 110.0, 120.0, 6.0),
@@ -483,6 +498,258 @@ def main():
             env_cfg.actions.joint_pos.sim_motor_strength_scale_range = (1.0, 1.0)
             env_cfg.actions.joint_pos.sim_kp_scale_range = (1.0, 1.0)
             env_cfg.actions.joint_pos.sim_kd_scale_range = (1.0, 1.0)
+        elif safety_profile == "performance_soft_output_v2_light_vmc":
+            env_cfg.actions.joint_pos.enable_deploy_target_filter = True
+            env_cfg.actions.joint_pos.enable_target_rate_limit = True
+            env_cfg.actions.joint_pos.enable_target_accel_limit = False
+            env_cfg.actions.joint_pos.enable_torque_target_limit = True
+            env_cfg.actions.joint_pos.enable_action_delay = False
+            env_cfg.actions.joint_pos.fixed_delay_steps = 0
+            env_cfg.actions.joint_pos.fast_trot_support_preload_z_m = 0.0055
+            env_cfg.actions.joint_pos.fast_trot_support_preload_gate_max = 0.60
+            env_cfg.actions.joint_pos.fast_trot_early_stance_blend = 0.24
+            env_cfg.actions.joint_pos.fast_trot_support_preload_ramp_in_phase = 0.16
+            env_cfg.actions.joint_pos.fast_trot_support_preload_ramp_out_phase = 0.16
+            env_cfg.actions.joint_pos.fast_trot_phase_switch_guard_window = 0.04
+            env_cfg.actions.joint_pos.fast_trot_enable_light_vmc = True
+            env_cfg.actions.joint_pos.light_vmc_target_base_height = 0.290
+            env_cfg.actions.joint_pos.light_vmc_height_kp_z = 0.45
+            env_cfg.actions.joint_pos.light_vmc_height_kd_z = 0.06
+            env_cfg.actions.joint_pos.light_vmc_height_corr_limit_m = 0.005
+            env_cfg.actions.joint_pos.light_vmc_roll_kp_z = 0.030
+            env_cfg.actions.joint_pos.light_vmc_roll_kd_z = 0.006
+            env_cfg.actions.joint_pos.light_vmc_roll_corr_limit_m = 0.004
+            env_cfg.actions.joint_pos.light_vmc_pitch_kp_z = 0.035
+            env_cfg.actions.joint_pos.light_vmc_pitch_kd_z = 0.006
+            env_cfg.actions.joint_pos.light_vmc_pitch_corr_limit_m = 0.004
+            env_cfg.actions.joint_pos.light_vmc_z_sign = 1.0
+            env_cfg.actions.joint_pos.light_vmc_roll_sign = 1.0
+            env_cfg.actions.joint_pos.light_vmc_pitch_sign = 1.0
+            env_cfg.actions.joint_pos.light_vmc_touchdown_ramp = 0.12
+            env_cfg.actions.joint_pos.light_vmc_preswing_ramp = 0.12
+            env_cfg.actions.joint_pos.light_vmc_max_weight = 1.0
+            env_cfg.actions.joint_pos.light_vmc_phase_switch_weight_scale = 0.6
+            env_cfg.actions.joint_pos.light_vmc_z_offset_rate_limit_m = 0.001
+            env_cfg.actions.joint_pos.light_vmc_xy_offset_rate_limit_m = 0.001
+            env_cfg.actions.joint_pos.light_vmc_enable_foot_placement = True
+            env_cfg.actions.joint_pos.light_vmc_vx_foot_k = 0.025
+            env_cfg.actions.joint_pos.light_vmc_vy_foot_k = 0.020
+            env_cfg.actions.joint_pos.light_vmc_pitch_rate_foot_x_k = 0.005
+            env_cfg.actions.joint_pos.light_vmc_roll_rate_foot_y_k = 0.005
+            env_cfg.actions.joint_pos.light_vmc_foot_x_corr_limit_m = 0.006
+            env_cfg.actions.joint_pos.light_vmc_foot_y_corr_limit_m = 0.004
+            env_cfg.actions.joint_pos.sim_target_rate_limit_range = (9.0, 9.0)
+            env_cfg.actions.joint_pos.sim_target_accel_limit_range = (1000.0, 1000.0)
+            env_cfg.actions.joint_pos.sim_torque_budget_range = (8.0, 8.0)
+            env_cfg.actions.joint_pos.sim_short_peak_torque_range = (12.0, 12.0)
+            env_cfg.actions.joint_pos.sim_short_peak_prob = 0.0
+            env_cfg.actions.joint_pos.sim_hard_torque_budget = 17.0
+            env_cfg.actions.joint_pos.hip_target_rate_mul = 7.5 / 9.0
+            env_cfg.actions.joint_pos.thigh_target_rate_mul = 1.0
+            env_cfg.actions.joint_pos.calf_target_rate_mul = 1.0
+            env_cfg.actions.joint_pos.sim_motor_strength_scale_range = (1.0, 1.0)
+            env_cfg.actions.joint_pos.sim_kp_scale_range = (1.0, 1.0)
+            env_cfg.actions.joint_pos.sim_kd_scale_range = (1.0, 1.0)
+        elif safety_profile == "performance_soft_output_v2_light_vmc_balance":
+            env_cfg.actions.joint_pos.enable_deploy_target_filter = True
+            env_cfg.actions.joint_pos.enable_target_rate_limit = True
+            env_cfg.actions.joint_pos.enable_target_accel_limit = False
+            env_cfg.actions.joint_pos.enable_torque_target_limit = True
+            env_cfg.actions.joint_pos.enable_action_delay = False
+            env_cfg.actions.joint_pos.fixed_delay_steps = 0
+            env_cfg.actions.joint_pos.fast_trot_support_preload_z_m = 0.0055
+            env_cfg.actions.joint_pos.fast_trot_support_preload_gate_max = 0.60
+            env_cfg.actions.joint_pos.fast_trot_early_stance_blend = 0.24
+            env_cfg.actions.joint_pos.fast_trot_support_preload_ramp_in_phase = 0.16
+            env_cfg.actions.joint_pos.fast_trot_support_preload_ramp_out_phase = 0.16
+            env_cfg.actions.joint_pos.fast_trot_phase_switch_guard_window = 0.04
+            env_cfg.actions.joint_pos.fast_trot_enable_light_vmc = True
+            env_cfg.actions.joint_pos.light_vmc_enable_foot_placement = False
+            env_cfg.actions.joint_pos.light_vmc_target_base_height = 0.288
+            env_cfg.actions.joint_pos.light_vmc_target_roll = 0.0
+            env_cfg.actions.joint_pos.light_vmc_target_pitch = -0.04
+            env_cfg.actions.joint_pos.light_vmc_height_kp_z = 0.30
+            env_cfg.actions.joint_pos.light_vmc_height_kd_z = 0.04
+            env_cfg.actions.joint_pos.light_vmc_height_corr_limit_m = 0.004
+            env_cfg.actions.joint_pos.light_vmc_roll_kp_z = 0.025
+            env_cfg.actions.joint_pos.light_vmc_roll_kd_z = 0.005
+            env_cfg.actions.joint_pos.light_vmc_roll_corr_limit_m = 0.0035
+            env_cfg.actions.joint_pos.light_vmc_pitch_kp_z = 0.025
+            env_cfg.actions.joint_pos.light_vmc_pitch_kd_z = 0.005
+            env_cfg.actions.joint_pos.light_vmc_pitch_corr_limit_m = 0.003
+            env_cfg.actions.joint_pos.light_vmc_z_sign = -1.0
+            env_cfg.actions.joint_pos.light_vmc_roll_sign = 1.0
+            env_cfg.actions.joint_pos.light_vmc_pitch_sign = -1.0
+            env_cfg.actions.joint_pos.light_vmc_touchdown_ramp = 0.12
+            env_cfg.actions.joint_pos.light_vmc_preswing_ramp = 0.12
+            env_cfg.actions.joint_pos.light_vmc_max_weight = 1.0
+            env_cfg.actions.joint_pos.light_vmc_phase_switch_weight_scale = 0.6
+            env_cfg.actions.joint_pos.light_vmc_z_offset_rate_limit_m = 0.001
+            env_cfg.actions.joint_pos.light_vmc_xy_offset_rate_limit_m = 0.001
+            env_cfg.actions.joint_pos.light_vmc_vx_foot_k = 0.025
+            env_cfg.actions.joint_pos.light_vmc_vy_foot_k = 0.020
+            env_cfg.actions.joint_pos.light_vmc_pitch_rate_foot_x_k = 0.005
+            env_cfg.actions.joint_pos.light_vmc_roll_rate_foot_y_k = 0.005
+            env_cfg.actions.joint_pos.light_vmc_foot_x_corr_limit_m = 0.006
+            env_cfg.actions.joint_pos.light_vmc_foot_y_corr_limit_m = 0.004
+            env_cfg.actions.joint_pos.sim_target_rate_limit_range = (9.0, 9.0)
+            env_cfg.actions.joint_pos.sim_target_accel_limit_range = (1000.0, 1000.0)
+            env_cfg.actions.joint_pos.sim_torque_budget_range = (8.0, 8.0)
+            env_cfg.actions.joint_pos.sim_short_peak_torque_range = (12.0, 12.0)
+            env_cfg.actions.joint_pos.sim_short_peak_prob = 0.0
+            env_cfg.actions.joint_pos.sim_hard_torque_budget = 17.0
+            env_cfg.actions.joint_pos.hip_target_rate_mul = 7.5 / 9.0
+            env_cfg.actions.joint_pos.thigh_target_rate_mul = 1.0
+            env_cfg.actions.joint_pos.calf_target_rate_mul = 1.0
+            env_cfg.actions.joint_pos.sim_motor_strength_scale_range = (1.0, 1.0)
+            env_cfg.actions.joint_pos.sim_kp_scale_range = (1.0, 1.0)
+            env_cfg.actions.joint_pos.sim_kd_scale_range = (1.0, 1.0)
+        elif safety_profile == "performance_soft_output_v2_light_vmc_balance_v2":
+            env_cfg.actions.joint_pos.enable_deploy_target_filter = True
+            env_cfg.actions.joint_pos.enable_target_rate_limit = True
+            env_cfg.actions.joint_pos.enable_target_accel_limit = False
+            env_cfg.actions.joint_pos.enable_torque_target_limit = True
+            env_cfg.actions.joint_pos.enable_action_delay = False
+            env_cfg.actions.joint_pos.fixed_delay_steps = 0
+            env_cfg.actions.joint_pos.fast_trot_support_preload_z_m = 0.0055
+            env_cfg.actions.joint_pos.fast_trot_support_preload_gate_max = 0.60
+            env_cfg.actions.joint_pos.fast_trot_early_stance_blend = 0.24
+            env_cfg.actions.joint_pos.fast_trot_support_preload_ramp_in_phase = 0.16
+            env_cfg.actions.joint_pos.fast_trot_support_preload_ramp_out_phase = 0.16
+            env_cfg.actions.joint_pos.fast_trot_phase_switch_guard_window = 0.04
+            env_cfg.actions.joint_pos.fast_trot_enable_light_vmc = True
+            env_cfg.actions.joint_pos.light_vmc_enable_foot_placement = False
+            env_cfg.actions.joint_pos.light_vmc_target_base_height = 0.288
+            env_cfg.actions.joint_pos.light_vmc_target_roll = 0.0
+            env_cfg.actions.joint_pos.light_vmc_target_pitch = -0.04
+            env_cfg.actions.joint_pos.light_vmc_height_kp_z = 0.30
+            env_cfg.actions.joint_pos.light_vmc_height_kd_z = 0.04
+            env_cfg.actions.joint_pos.light_vmc_height_corr_limit_m = 0.004
+            env_cfg.actions.joint_pos.light_vmc_roll_kp_z = 0.030
+            env_cfg.actions.joint_pos.light_vmc_roll_kd_z = 0.007
+            env_cfg.actions.joint_pos.light_vmc_roll_corr_limit_m = 0.004
+            env_cfg.actions.joint_pos.light_vmc_pitch_kp_z = 0.025
+            env_cfg.actions.joint_pos.light_vmc_pitch_kd_z = 0.005
+            env_cfg.actions.joint_pos.light_vmc_pitch_corr_limit_m = 0.003
+            env_cfg.actions.joint_pos.light_vmc_z_sign = -1.0
+            env_cfg.actions.joint_pos.light_vmc_roll_sign = 1.0
+            env_cfg.actions.joint_pos.light_vmc_pitch_sign = -1.0
+            env_cfg.actions.joint_pos.light_vmc_touchdown_ramp = 0.12
+            env_cfg.actions.joint_pos.light_vmc_preswing_ramp = 0.12
+            env_cfg.actions.joint_pos.light_vmc_max_weight = 1.0
+            env_cfg.actions.joint_pos.light_vmc_phase_switch_weight_scale = 0.6
+            env_cfg.actions.joint_pos.light_vmc_z_offset_rate_limit_m = 0.001
+            env_cfg.actions.joint_pos.light_vmc_xy_offset_rate_limit_m = 0.001
+            env_cfg.actions.joint_pos.enable_light_yaw_damping = True
+            env_cfg.actions.joint_pos.light_yaw_kp_hip = 0.004
+            env_cfg.actions.joint_pos.light_yaw_kd_hip = 0.010
+            env_cfg.actions.joint_pos.light_yaw_hip_limit_rad = 0.010
+            env_cfg.actions.joint_pos.light_yaw_hip_rate_limit_rad = 0.002
+            env_cfg.actions.joint_pos.light_yaw_sign = 1.0
+            env_cfg.actions.joint_pos.rear_preswing_unload_enable = True
+            env_cfg.actions.joint_pos.rear_preswing_unload_window = 0.14
+            env_cfg.actions.joint_pos.rear_preswing_unload_z_m = 0.003
+            env_cfg.actions.joint_pos.rear_preswing_vmc_fade_window = 0.14
+            env_cfg.actions.joint_pos.rear_unload_sign = 1.0
+            env_cfg.actions.joint_pos.rear_touchdown_vmc_ramp = 0.16
+            env_cfg.actions.joint_pos.rear_touchdown_kp_ramp = 0.18
+            env_cfg.actions.joint_pos.light_vmc_vx_foot_k = 0.025
+            env_cfg.actions.joint_pos.light_vmc_vy_foot_k = 0.020
+            env_cfg.actions.joint_pos.light_vmc_pitch_rate_foot_x_k = 0.005
+            env_cfg.actions.joint_pos.light_vmc_roll_rate_foot_y_k = 0.005
+            env_cfg.actions.joint_pos.light_vmc_foot_x_corr_limit_m = 0.006
+            env_cfg.actions.joint_pos.light_vmc_foot_y_corr_limit_m = 0.004
+            env_cfg.actions.joint_pos.sim_target_rate_limit_range = (9.0, 9.0)
+            env_cfg.actions.joint_pos.sim_target_accel_limit_range = (1000.0, 1000.0)
+            env_cfg.actions.joint_pos.sim_torque_budget_range = (8.0, 8.0)
+            env_cfg.actions.joint_pos.sim_short_peak_torque_range = (12.0, 12.0)
+            env_cfg.actions.joint_pos.sim_short_peak_prob = 0.0
+            env_cfg.actions.joint_pos.sim_hard_torque_budget = 17.0
+            env_cfg.actions.joint_pos.hip_target_rate_mul = 7.5 / 9.0
+            env_cfg.actions.joint_pos.thigh_target_rate_mul = 1.0
+            env_cfg.actions.joint_pos.calf_target_rate_mul = 1.0
+            env_cfg.actions.joint_pos.sim_motor_strength_scale_range = (1.0, 1.0)
+            env_cfg.actions.joint_pos.sim_kp_scale_range = (1.0, 1.0)
+            env_cfg.actions.joint_pos.sim_kd_scale_range = (1.0, 1.0)
+        elif safety_profile == "performance_soft_output_v2_light_vmc_balance_v3":
+            env_cfg.actions.joint_pos.enable_deploy_target_filter = True
+            env_cfg.actions.joint_pos.enable_target_rate_limit = True
+            env_cfg.actions.joint_pos.enable_target_accel_limit = False
+            env_cfg.actions.joint_pos.enable_torque_target_limit = True
+            env_cfg.actions.joint_pos.enable_action_delay = False
+            env_cfg.actions.joint_pos.fixed_delay_steps = 0
+            env_cfg.actions.joint_pos.fast_trot_support_preload_z_m = 0.0055
+            env_cfg.actions.joint_pos.fast_trot_support_preload_gate_max = 0.60
+            env_cfg.actions.joint_pos.fast_trot_early_stance_blend = 0.24
+            env_cfg.actions.joint_pos.fast_trot_support_preload_ramp_in_phase = 0.16
+            env_cfg.actions.joint_pos.fast_trot_support_preload_ramp_out_phase = 0.16
+            env_cfg.actions.joint_pos.fast_trot_phase_switch_guard_window = 0.055
+            env_cfg.actions.joint_pos.fast_trot_phase_switch_guard_hip_kp = 58.0
+            env_cfg.actions.joint_pos.fast_trot_phase_switch_guard_thigh_kp = 125.0
+            env_cfg.actions.joint_pos.fast_trot_phase_switch_guard_calf_kp = 135.0
+            env_cfg.actions.joint_pos.fast_trot_phase_switch_guard_kd = 6.2
+            env_cfg.actions.joint_pos.fast_trot_phase_switch_kp_scale = 0.75
+            env_cfg.actions.joint_pos.fast_trot_guard_soft_start_torque = 9.5
+            env_cfg.actions.joint_pos.fast_trot_guard_soft_full_torque = 13.5
+            env_cfg.actions.joint_pos.fast_trot_enable_light_vmc = True
+            env_cfg.actions.joint_pos.light_vmc_enable_foot_placement = False
+            env_cfg.actions.joint_pos.light_vmc_target_base_height = 0.288
+            env_cfg.actions.joint_pos.light_vmc_target_roll = 0.0
+            env_cfg.actions.joint_pos.light_vmc_target_pitch = -0.04
+            env_cfg.actions.joint_pos.light_vmc_height_kp_z = 0.30
+            env_cfg.actions.joint_pos.light_vmc_height_kd_z = 0.04
+            env_cfg.actions.joint_pos.light_vmc_height_corr_limit_m = 0.004
+            env_cfg.actions.joint_pos.light_vmc_roll_kp_z = 0.025
+            env_cfg.actions.joint_pos.light_vmc_roll_kd_z = 0.006
+            env_cfg.actions.joint_pos.light_vmc_roll_corr_limit_m = 0.0035
+            env_cfg.actions.joint_pos.light_vmc_pitch_kp_z = 0.025
+            env_cfg.actions.joint_pos.light_vmc_pitch_kd_z = 0.005
+            env_cfg.actions.joint_pos.light_vmc_pitch_corr_limit_m = 0.003
+            env_cfg.actions.joint_pos.light_vmc_z_sign = -1.0
+            env_cfg.actions.joint_pos.light_vmc_roll_sign = 1.0
+            env_cfg.actions.joint_pos.light_vmc_pitch_sign = -1.0
+            env_cfg.actions.joint_pos.light_vmc_touchdown_ramp = 0.12
+            env_cfg.actions.joint_pos.light_vmc_preswing_ramp = 0.12
+            env_cfg.actions.joint_pos.light_vmc_max_weight = 1.0
+            env_cfg.actions.joint_pos.light_vmc_phase_switch_weight_scale = 0.50
+            env_cfg.actions.joint_pos.light_vmc_z_offset_rate_limit_m = 0.001
+            env_cfg.actions.joint_pos.light_vmc_xy_offset_rate_limit_m = 0.001
+            env_cfg.actions.joint_pos.enable_light_yaw_damping = True
+            env_cfg.actions.joint_pos.light_yaw_kp_hip = 0.0025
+            env_cfg.actions.joint_pos.light_yaw_kd_hip = 0.006
+            env_cfg.actions.joint_pos.light_yaw_hip_limit_rad = 0.007
+            env_cfg.actions.joint_pos.light_yaw_hip_rate_limit_rad = 0.001
+            env_cfg.actions.joint_pos.light_yaw_phase_switch_weight_scale = 0.40
+            env_cfg.actions.joint_pos.light_yaw_sign = 1.0
+            env_cfg.actions.joint_pos.rear_preswing_unload_enable = True
+            env_cfg.actions.joint_pos.rear_preswing_unload_window = 0.12
+            env_cfg.actions.joint_pos.rear_preswing_unload_z_m = 0.001
+            env_cfg.actions.joint_pos.rear_preswing_vmc_fade_window = 0.14
+            env_cfg.actions.joint_pos.rear_unload_sign = 1.0
+            env_cfg.actions.joint_pos.rear_touchdown_vmc_ramp = 0.18
+            env_cfg.actions.joint_pos.rear_touchdown_kp_ramp = 0.22
+            env_cfg.actions.joint_pos.rear_touchdown_kp_scale = 0.75
+            env_cfg.actions.joint_pos.rear_touchdown_thigh_kp_limit = 125.0
+            env_cfg.actions.joint_pos.rear_touchdown_calf_kp_limit = 135.0
+            env_cfg.actions.joint_pos.rear_touchdown_kd = 6.2
+            env_cfg.actions.joint_pos.light_vmc_vx_foot_k = 0.025
+            env_cfg.actions.joint_pos.light_vmc_vy_foot_k = 0.020
+            env_cfg.actions.joint_pos.light_vmc_pitch_rate_foot_x_k = 0.005
+            env_cfg.actions.joint_pos.light_vmc_roll_rate_foot_y_k = 0.005
+            env_cfg.actions.joint_pos.light_vmc_foot_x_corr_limit_m = 0.006
+            env_cfg.actions.joint_pos.light_vmc_foot_y_corr_limit_m = 0.004
+            env_cfg.actions.joint_pos.sim_target_rate_limit_range = (9.0, 9.0)
+            env_cfg.actions.joint_pos.sim_target_accel_limit_range = (1000.0, 1000.0)
+            env_cfg.actions.joint_pos.sim_torque_budget_range = (8.0, 8.0)
+            env_cfg.actions.joint_pos.sim_short_peak_torque_range = (12.0, 12.0)
+            env_cfg.actions.joint_pos.sim_short_peak_prob = 0.0
+            env_cfg.actions.joint_pos.sim_hard_torque_budget = 17.0
+            env_cfg.actions.joint_pos.hip_target_rate_mul = 7.5 / 9.0
+            env_cfg.actions.joint_pos.thigh_target_rate_mul = 1.0
+            env_cfg.actions.joint_pos.calf_target_rate_mul = 1.0
+            env_cfg.actions.joint_pos.sim_motor_strength_scale_range = (1.0, 1.0)
+            env_cfg.actions.joint_pos.sim_kp_scale_range = (1.0, 1.0)
+            env_cfg.actions.joint_pos.sim_kd_scale_range = (1.0, 1.0)
         elif safety_profile == "real_safe":
             env_cfg.actions.joint_pos.enable_deploy_target_filter = True
             env_cfg.actions.joint_pos.enable_target_rate_limit = True
@@ -526,6 +793,10 @@ def main():
                     "performance_soft_output",
                     "performance_soft_output_v2",
                     "performance_soft_output_v2_small_fix",
+                    "performance_soft_output_v2_light_vmc",
+                    "performance_soft_output_v2_light_vmc_balance",
+                    "performance_soft_output_v2_light_vmc_balance_v2",
+                    "performance_soft_output_v2_light_vmc_balance_v3",
                 )
                 else "mid"
             )
@@ -642,7 +913,37 @@ def main():
         "phase_switch_guard_active",
         "phase_switch_guard_strength",
         "phase_to_switch",
+        "phase_switch_vmc_weight_scale_applied",
+        "phase_switch_yaw_weight_scale_applied",
+        "phase_switch_kp_scale_applied",
         "global_support_height_offset_m",
+        "light_vmc_enabled",
+        "enable_light_foot_placement",
+        "height_sign",
+        "roll_sign",
+        "pitch_sign",
+        "target_base_height",
+        "target_roll",
+        "target_pitch",
+        "enable_light_yaw_damping",
+        "yaw_target",
+        "yaw_error",
+        "yaw_corr_hip_raw",
+        "yaw_corr_hip_final",
+        "yaw_sign",
+        "rear_preswing_unload_enable",
+        "rear_unload_sign",
+        "vmc_height_corr_z",
+        "vmc_roll_corr_z",
+        "vmc_pitch_corr_z",
+        "vmc_foot_x_corr",
+        "vmc_foot_y_corr",
+        "base_lin_vel_x",
+        "base_lin_vel_y",
+        "base_lin_vel_z",
+        "base_ang_vel_x",
+        "base_ang_vel_y",
+        "base_ang_vel_z",
         "target_leg_unload_delta_z",
         "body_shift_x",
         "body_shift_y",
@@ -678,6 +979,17 @@ def main():
         "post_touchdown_gate",
         "support_gate",
         "guard_kp_scale",
+        "vmc_weight",
+        "vmc_foot_z_offset",
+        "vmc_foot_x_offset",
+        "vmc_foot_y_offset",
+        "yaw_hip_offset",
+        "yaw_hip_rate_limited",
+        "rear_preswing_unload_gate",
+        "rear_preswing_vmc_fade",
+        "rear_preswing_unload_z_offset",
+        "rear_touchdown_vmc_ramp_weight",
+        "rear_touchdown_kp_scale",
         "joint_limit_clip_mask",
         "rate_limit_clip_mask",
         "acceleration_clip_mask",
@@ -737,6 +1049,17 @@ def main():
                     "preload_gate",
                     "post_touchdown_gate",
                     "support_gate",
+                    "vmc_weight",
+                    "vmc_foot_z_offset",
+                    "vmc_foot_x_offset",
+                    "vmc_foot_y_offset",
+                    "yaw_hip_offset",
+                    "yaw_hip_rate_limited",
+                    "rear_preswing_unload_gate",
+                    "rear_preswing_vmc_fade",
+                    "rear_preswing_unload_z_offset",
+                    "rear_touchdown_vmc_ramp_weight",
+                    "rear_touchdown_kp_scale",
                     "predicted_foot_height",
                     "foot_world_z",
                     "foot_body_z",
@@ -806,8 +1129,38 @@ def main():
         "roll_abs": [],
         "pitch_abs": [],
         "yaw_abs": [],
+        "roll": [],
+        "pitch": [],
+        "yaw": [],
+        "base_ang_vel_abs_x": [],
+        "base_ang_vel_abs_y": [],
+        "base_ang_vel_abs_z": [],
+        "vmc_height_corr_abs": [],
+        "vmc_roll_corr_abs": [],
+        "vmc_pitch_corr_abs": [],
+        "vmc_height_corr_saturated": [],
+        "vmc_roll_corr_saturated": [],
+        "vmc_pitch_corr_saturated": [],
+        "vmc_foot_z_abs": [[] for _ in LEG_NAMES],
+        "vmc_weight": [[] for _ in LEG_NAMES],
+        "yaw_error_abs": [],
+        "yaw_corr_hip_raw_abs": [],
+        "yaw_corr_hip_abs": [],
+        "yaw_hip_offset_abs": [[] for _ in LEG_NAMES],
+        "rear_preswing_unload_gate_max": [],
+        "rear_preswing_vmc_fade_min": [],
+        "rear_preswing_unload_z_abs": [[] for _ in LEG_NAMES],
+        "rear_touchdown_force": [],
+        "phase_switch_vmc_scale": [],
+        "phase_switch_yaw_scale": [],
+        "phase_switch_kp_scale": [],
         "guard_tau": [],
         "non_guard_tau": [],
+        "front_swing_force_airborne": [],
+        "rr_swing_force_airborne": [],
+        "rl_swing_force_airborne": [],
+        "rr_swing_force_mid": [],
+        "rl_swing_force_mid": [],
         "rear_swing_force_mid": [],
         "rear_swing_force_touchdown": [],
     }
@@ -980,18 +1333,82 @@ def main():
                     else:
                         fast_trot_stats["non_guard_tau"].append(_scalar(debug["tau_est_cmd_final_max"]))
                     rpy = _row_vector(debug["base_rpy"])
+                    fast_trot_stats["roll"].append(rpy[0])
+                    fast_trot_stats["pitch"].append(rpy[1])
+                    fast_trot_stats["yaw"].append(rpy[2])
                     fast_trot_stats["roll_abs"].append(abs(rpy[0]))
                     fast_trot_stats["pitch_abs"].append(abs(rpy[1]))
                     fast_trot_stats["yaw_abs"].append(abs(rpy[2]))
+                    base_ang_vel = _row_vector(debug["base_ang_vel"])
+                    fast_trot_stats["base_ang_vel_abs_x"].append(abs(base_ang_vel[0]))
+                    fast_trot_stats["base_ang_vel_abs_y"].append(abs(base_ang_vel[1]))
+                    fast_trot_stats["base_ang_vel_abs_z"].append(abs(base_ang_vel[2]))
+                    fast_trot_stats["vmc_height_corr_abs"].append(abs(_scalar(debug["vmc_height_corr_z"])))
+                    fast_trot_stats["vmc_roll_corr_abs"].append(abs(_scalar(debug["vmc_roll_corr_z"])))
+                    fast_trot_stats["vmc_pitch_corr_abs"].append(abs(_scalar(debug["vmc_pitch_corr_z"])))
+                    fast_trot_stats["vmc_height_corr_saturated"].append(
+                        float(abs(_scalar(debug["vmc_height_corr_z"])) >= float(action_term.cfg.light_vmc_height_corr_limit_m) - 1.0e-6)
+                    )
+                    fast_trot_stats["vmc_roll_corr_saturated"].append(
+                        float(abs(_scalar(debug["vmc_roll_corr_z"])) >= float(action_term.cfg.light_vmc_roll_corr_limit_m) - 1.0e-6)
+                    )
+                    fast_trot_stats["vmc_pitch_corr_saturated"].append(
+                        float(abs(_scalar(debug["vmc_pitch_corr_z"])) >= float(action_term.cfg.light_vmc_pitch_corr_limit_m) - 1.0e-6)
+                    )
+                    vmc_z = _row_vector(debug["vmc_foot_z_offset"])
+                    vmc_weight = _row_vector(debug["vmc_weight"])
+                    for leg_index in range(4):
+                        fast_trot_stats["vmc_foot_z_abs"][leg_index].append(abs(vmc_z[leg_index]))
+                        fast_trot_stats["vmc_weight"][leg_index].append(vmc_weight[leg_index])
+                    fast_trot_stats["yaw_error_abs"].append(abs(_scalar(debug["light_yaw_error"])))
+                    fast_trot_stats["yaw_corr_hip_raw_abs"].append(abs(_scalar(debug["light_yaw_corr_hip_raw"])))
+                    fast_trot_stats["yaw_corr_hip_abs"].append(abs(_scalar(debug["light_yaw_corr_hip"])))
+                    yaw_offsets = _row_vector(debug["yaw_hip_offset"])
+                    for leg_index in range(4):
+                        fast_trot_stats["yaw_hip_offset_abs"][leg_index].append(abs(yaw_offsets[leg_index]))
+                    fast_trot_stats["rear_preswing_unload_gate_max"].append(
+                        max(_row_vector(debug["rear_preswing_unload_gate"]))
+                    )
+                    fast_trot_stats["rear_preswing_vmc_fade_min"].append(
+                        min(_row_vector(debug["rear_preswing_vmc_fade"]))
+                    )
+                    rear_unload_z = _row_vector(debug["rear_preswing_unload_z_offset"])
+                    for leg_index in range(4):
+                        fast_trot_stats["rear_preswing_unload_z_abs"][leg_index].append(
+                            abs(rear_unload_z[leg_index])
+                        )
+                    fast_trot_stats["phase_switch_vmc_scale"].append(
+                        _scalar(debug["phase_switch_vmc_weight_scale_applied"])
+                    )
+                    fast_trot_stats["phase_switch_yaw_scale"].append(
+                        _scalar(debug["phase_switch_yaw_weight_scale_applied"])
+                    )
+                    fast_trot_stats["phase_switch_kp_scale"].append(
+                        _scalar(debug["phase_switch_kp_scale_applied"])
+                    )
                     phases = _row_vector(debug["leg_phase"])
                     swings = _row_vector(debug["swing_mask"].to(torch.float32))
                     forces = _row_vector(debug["foot_normal_force"])
+                    for front_index in (0, 1):
+                        if swings[front_index] > 0.5:
+                            fast_trot_stats["front_swing_force_airborne"].append(
+                                float(forces[front_index] < 3.0)
+                            )
                     for rear_index in (2, 3):
                         if swings[rear_index] > 0.5:
+                            if rear_index == 2:
+                                fast_trot_stats["rr_swing_force_airborne"].append(float(forces[rear_index] < 3.0))
+                            else:
+                                fast_trot_stats["rl_swing_force_airborne"].append(float(forces[rear_index] < 3.0))
                             if 0.25 <= phases[rear_index] <= 0.70:
                                 fast_trot_stats["rear_swing_force_mid"].append(float(forces[rear_index] < 3.0))
+                                if rear_index == 2:
+                                    fast_trot_stats["rr_swing_force_mid"].append(float(forces[rear_index] < 3.0))
+                                else:
+                                    fast_trot_stats["rl_swing_force_mid"].append(float(forces[rear_index] < 3.0))
                             elif phases[rear_index] > 0.70:
                                 fast_trot_stats["rear_swing_force_touchdown"].append(float(forces[rear_index] < 3.0))
+                                fast_trot_stats["rear_touchdown_force"].append(forces[rear_index])
                     tau_max = _scalar(debug["tau_est_cmd_final_max"])
                     if tau_max > max_spike["tau"]:
                         max_spike.update(
@@ -1087,7 +1504,37 @@ def main():
                     int(bool(_scalar(debug["phase_switch_guard_active"]))),
                     _scalar(debug["phase_switch_guard_strength"]),
                     _scalar(debug["phase_to_switch"]),
+                    _scalar(debug["phase_switch_vmc_weight_scale_applied"]),
+                    _scalar(debug["phase_switch_yaw_weight_scale_applied"]),
+                    _scalar(debug["phase_switch_kp_scale_applied"]),
                     _scalar(debug["global_support_height_offset_m"]),
+                    int(bool(_scalar(debug["light_vmc_enabled"]))),
+                    int(bool(_scalar(debug["light_vmc_foot_placement_enabled"]))),
+                    _scalar(debug["light_vmc_height_sign"]),
+                    _scalar(debug["light_vmc_roll_sign"]),
+                    _scalar(debug["light_vmc_pitch_sign"]),
+                    _scalar(debug["light_vmc_target_base_height"]),
+                    _scalar(debug["light_vmc_target_roll"]),
+                    _scalar(debug["light_vmc_target_pitch"]),
+                    int(bool(_scalar(debug["light_yaw_damping_enabled"]))),
+                    _scalar(debug["light_yaw_target"]),
+                    _scalar(debug["light_yaw_error"]),
+                    _scalar(debug["light_yaw_corr_hip_raw"]),
+                    _scalar(debug["light_yaw_corr_hip"]),
+                    _scalar(debug["light_yaw_sign"]),
+                    int(bool(_scalar(debug["rear_preswing_unload_enabled"]))),
+                    _scalar(debug["rear_unload_sign"]),
+                    _scalar(debug["vmc_height_corr_z"]),
+                    _scalar(debug["vmc_roll_corr_z"]),
+                    _scalar(debug["vmc_pitch_corr_z"]),
+                    _scalar(debug["vmc_foot_x_corr"]),
+                    _scalar(debug["vmc_foot_y_corr"]),
+                    _row_vector(debug["base_lin_vel"])[0],
+                    _row_vector(debug["base_lin_vel"])[1],
+                    _row_vector(debug["base_lin_vel"])[2],
+                    _row_vector(debug["base_ang_vel"])[0],
+                    _row_vector(debug["base_ang_vel"])[1],
+                    _row_vector(debug["base_ang_vel"])[2],
                     _scalar(debug["target_leg_unload_delta_z"]),
                     _row_vector(debug["body_shift_xy"])[0],
                     _row_vector(debug["body_shift_xy"])[1],
@@ -1122,6 +1569,17 @@ def main():
                 row += _row_vector(debug["post_touchdown_gate"])
                 row += _row_vector(debug["support_gate"])
                 row += _row_vector(debug["guard_kp_scale"])
+                row += _row_vector(debug["vmc_weight"])
+                row += _row_vector(debug["vmc_foot_z_offset"])
+                row += _row_vector(debug["vmc_foot_x_offset"])
+                row += _row_vector(debug["vmc_foot_y_offset"])
+                row += _row_vector(debug["yaw_hip_offset"])
+                row += _row_vector(debug["yaw_hip_rate_limited"])
+                row += _row_vector(debug["rear_preswing_unload_gate"])
+                row += _row_vector(debug["rear_preswing_vmc_fade"])
+                row += _row_vector(debug["rear_preswing_unload_z_offset"])
+                row += _row_vector(debug["rear_touchdown_vmc_ramp_weight"])
+                row += _row_vector(debug["rear_touchdown_kp_scale"])
                 row += _row_vector(debug["joint_limit_clip_mask"].to(torch.float32))
                 row += _row_vector(debug["rate_limit_clip_mask"].to(torch.float32))
                 row += _row_vector(debug["acceleration_clip_mask"].to(torch.float32))
@@ -1315,6 +1773,18 @@ def main():
                 f"{_percentile(fast_trot_stats['non_guard_tau'], 99):.2f}/"
                 f"{(max(fast_trot_stats['non_guard_tau']) if fast_trot_stats['non_guard_tau'] else float('nan')):.2f}Nm"
             )
+            print(
+                "[FAST_TROT_PHASE_SWITCH_GUARD] "
+                f"vmc_scale min/mean="
+                f"{(min(fast_trot_stats['phase_switch_vmc_scale']) if fast_trot_stats['phase_switch_vmc_scale'] else float('nan')):.3f}/"
+                f"{_mean(fast_trot_stats['phase_switch_vmc_scale']):.3f} "
+                f"yaw_scale min/mean="
+                f"{(min(fast_trot_stats['phase_switch_yaw_scale']) if fast_trot_stats['phase_switch_yaw_scale'] else float('nan')):.3f}/"
+                f"{_mean(fast_trot_stats['phase_switch_yaw_scale']):.3f} "
+                f"kp_scale min/mean="
+                f"{(min(fast_trot_stats['phase_switch_kp_scale']) if fast_trot_stats['phase_switch_kp_scale'] else float('nan')):.3f}/"
+                f"{_mean(fast_trot_stats['phase_switch_kp_scale']):.3f}"
+            )
             spike_cause = (
                 "phase_switch_kp_or_speed"
                 if max_spike["guard"] > 1.0e-6 and max_spike["force_sum"] < 135.0
@@ -1336,15 +1806,127 @@ def main():
             ))
             print(
                 "[FAST_TROT_BASE] "
-                f"height mean/min/p95="
+                f"height mean/min/p95/p99="
                 f"{_mean(fast_trot_stats['base_height']):.3f}/"
                 f"{(min(fast_trot_stats['base_height']) if fast_trot_stats['base_height'] else float('nan')):.3f}/"
-                f"{_percentile(fast_trot_stats['base_height'], 95):.3f}m "
-                f"roll/pitch/yaw_abs_p95_deg="
+                f"{_percentile(fast_trot_stats['base_height'], 95):.3f}/"
+                f"{_percentile(fast_trot_stats['base_height'], 99):.3f}m "
+                f"roll/pitch/yaw_abs_p95/p99/max_deg="
                 f"{_percentile(fast_trot_stats['roll_abs'], 95) * 57.2958:.2f}/"
                 f"{_percentile(fast_trot_stats['pitch_abs'], 95) * 57.2958:.2f}/"
-                f"{_percentile(fast_trot_stats['yaw_abs'], 95) * 57.2958:.2f}"
+                f"{_percentile(fast_trot_stats['yaw_abs'], 95) * 57.2958:.2f} "
+                f"| p99="
+                f"{_percentile(fast_trot_stats['roll_abs'], 99) * 57.2958:.2f}/"
+                f"{_percentile(fast_trot_stats['pitch_abs'], 99) * 57.2958:.2f}/"
+                f"{_percentile(fast_trot_stats['yaw_abs'], 99) * 57.2958:.2f} "
+                f"| max="
+                f"{(max(fast_trot_stats['roll_abs']) if fast_trot_stats['roll_abs'] else float('nan')) * 57.2958:.2f}/"
+                f"{(max(fast_trot_stats['pitch_abs']) if fast_trot_stats['pitch_abs'] else float('nan')) * 57.2958:.2f}/"
+                f"{(max(fast_trot_stats['yaw_abs']) if fast_trot_stats['yaw_abs'] else float('nan')) * 57.2958:.2f} "
+                f"ang_vel_abs_p95_xyz="
+                f"{_percentile(fast_trot_stats['base_ang_vel_abs_x'], 95):.3f}/"
+                f"{_percentile(fast_trot_stats['base_ang_vel_abs_y'], 95):.3f}/"
+                f"{_percentile(fast_trot_stats['base_ang_vel_abs_z'], 95):.3f}rad/s"
             )
+            print(
+                "[FAST_TROT_BODY_STABILITY] "
+                f"base_roll mean/p95_deg="
+                f"{_mean(fast_trot_stats['roll']) * 57.2958:.2f}/"
+                f"{_percentile(fast_trot_stats['roll'], 95) * 57.2958:.2f} "
+                f"base_pitch mean/p95_deg="
+                f"{_mean(fast_trot_stats['pitch']) * 57.2958:.2f}/"
+                f"{_percentile(fast_trot_stats['pitch'], 95) * 57.2958:.2f} "
+                f"base_yaw mean/p95_deg="
+                f"{_mean(fast_trot_stats['yaw']) * 57.2958:.2f}/"
+                f"{_percentile(fast_trot_stats['yaw'], 95) * 57.2958:.2f}"
+            )
+            print(
+                "[FAST_TROT_LIGHT_VMC] "
+                f"enabled={int(bool(action_term.cfg.fast_trot_enable_light_vmc))} "
+                f"foot_placement={int(bool(action_term.cfg.light_vmc_enable_foot_placement))} "
+                f"height/roll/pitch_sign="
+                f"{float(action_term.cfg.light_vmc_z_sign):+.1f}/"
+                f"{float(action_term.cfg.light_vmc_roll_sign):+.1f}/"
+                f"{float(action_term.cfg.light_vmc_pitch_sign):+.1f} "
+                f"target_height/roll/pitch="
+                f"{float(action_term.cfg.light_vmc_target_base_height):.3f}/"
+                f"{float(action_term.cfg.light_vmc_target_roll):+.3f}/"
+                f"{float(action_term.cfg.light_vmc_target_pitch):+.3f} "
+                f"height/roll/pitch_corr_abs p95/max="
+                f"{_percentile(fast_trot_stats['vmc_height_corr_abs'], 95):.4f}/"
+                f"{(max(fast_trot_stats['vmc_height_corr_abs']) if fast_trot_stats['vmc_height_corr_abs'] else float('nan')):.4f}m "
+                f"{_percentile(fast_trot_stats['vmc_roll_corr_abs'], 95):.4f}/"
+                f"{(max(fast_trot_stats['vmc_roll_corr_abs']) if fast_trot_stats['vmc_roll_corr_abs'] else float('nan')):.4f}m "
+                f"{_percentile(fast_trot_stats['vmc_pitch_corr_abs'], 95):.4f}/"
+                f"{(max(fast_trot_stats['vmc_pitch_corr_abs']) if fast_trot_stats['vmc_pitch_corr_abs'] else float('nan')):.4f}m"
+            )
+            print(
+                "[FAST_TROT_LIGHT_VMC_SATURATION] "
+                f"height/roll/pitch="
+                f"{_mean(fast_trot_stats['vmc_height_corr_saturated']):.3f}/"
+                f"{_mean(fast_trot_stats['vmc_roll_corr_saturated']):.3f}/"
+                f"{_mean(fast_trot_stats['vmc_pitch_corr_saturated']):.3f}"
+            )
+            height_mean = _mean(fast_trot_stats["base_height"])
+            height_min = min(fast_trot_stats["base_height"]) if fast_trot_stats["base_height"] else float("nan")
+            if (
+                safety_profile == "performance_soft_output_v2_light_vmc_balance"
+                and height_mean < 0.286
+                and _mean(fast_trot_stats["vmc_height_corr_saturated"]) > 0.20
+            ):
+                print(
+                    "[FAST_TROT_LIGHT_VMC_WARNING] base height is still low while "
+                    "height correction saturates; height_sign may still need checking."
+                )
+            if (
+                safety_profile == "performance_soft_output_v2_light_vmc_balance"
+                and _percentile(fast_trot_stats["pitch_abs"], 95) * 57.2958 > 5.5
+            ):
+                print(
+                    "[FAST_TROT_LIGHT_VMC_WARNING] pitch_abs p95 is high; check "
+                    "pitch_sign or target_pitch before increasing gains."
+                )
+            if (
+                safety_profile == "performance_soft_output_v2_light_vmc_balance"
+                and height_min < 0.283
+            ):
+                print(
+                    "[FAST_TROT_LIGHT_VMC_WARNING] base_height min is below 0.283 m; "
+                    "treat this balance profile as not accepted yet."
+                )
+            for leg_index, leg_name in enumerate(LEG_NAMES):
+                values = fast_trot_stats["vmc_foot_z_abs"][leg_index]
+                weights = fast_trot_stats["vmc_weight"][leg_index]
+                print(
+                    "[FAST_TROT_LIGHT_VMC_LEG] "
+                    f"{leg_name} z_offset_abs p95/max="
+                    f"{_percentile(values, 95):.4f}/"
+                    f"{(max(values) if values else float('nan')):.4f}m "
+                    f"weight mean/p95="
+                    f"{_mean(weights):.3f}/{_percentile(weights, 95):.3f}"
+                )
+            print(
+                "[FAST_TROT_YAW_DAMPING] "
+                f"enabled={int(bool(action_term.cfg.enable_light_yaw_damping))} "
+                f"target/sign={_scalar(debug['light_yaw_target']):+.3f}/"
+                f"{float(action_term.cfg.light_yaw_sign):+.1f} "
+                f"yaw_error_abs p95/max="
+                f"{_percentile(fast_trot_stats['yaw_error_abs'], 95):.3f}/"
+                f"{(max(fast_trot_stats['yaw_error_abs']) if fast_trot_stats['yaw_error_abs'] else float('nan')):.3f}rad "
+                f"yaw_corr_raw/final_abs p95="
+                f"{_percentile(fast_trot_stats['yaw_corr_hip_raw_abs'], 95):.4f}/"
+                f"{_percentile(fast_trot_stats['yaw_corr_hip_abs'], 95):.4f}rad "
+                f"yaw_corr_final_abs max="
+                f"{(max(fast_trot_stats['yaw_corr_hip_abs']) if fast_trot_stats['yaw_corr_hip_abs'] else float('nan')):.4f}rad"
+            )
+            for leg_index, leg_name in enumerate(LEG_NAMES):
+                values = fast_trot_stats["yaw_hip_offset_abs"][leg_index]
+                print(
+                    "[FAST_TROT_YAW_HIP_OFFSET] "
+                    f"{leg_name} p95/max="
+                    f"{_percentile(values, 95):.4f}/"
+                    f"{(max(values) if values else float('nan')):.4f}rad"
+                )
             contact_counts = fast_trot_stats["contact_count"]
             print(
                 "[FAST_TROT_CONTACT_SUMMARY] "
@@ -1379,9 +1961,39 @@ def main():
             )
             print(
                 "[FAST_TROT_REAR_AIRBORNE] "
-                f"force<3N mid_swing={_mean(fast_trot_stats['rear_swing_force_mid']):.3f} "
+                f"front_all={_mean(fast_trot_stats['front_swing_force_airborne']):.3f} "
+                f"RR_all={_mean(fast_trot_stats['rr_swing_force_airborne']):.3f} "
+                f"RL_all={_mean(fast_trot_stats['rl_swing_force_airborne']):.3f} "
+                f"rear_mid={_mean(fast_trot_stats['rear_swing_force_mid']):.3f} "
+                f"RR_mid={_mean(fast_trot_stats['rr_swing_force_mid']):.3f} "
+                f"RL_mid={_mean(fast_trot_stats['rl_swing_force_mid']):.3f} "
                 f"touchdown_transition={_mean(fast_trot_stats['rear_swing_force_touchdown']):.3f}"
             )
+            print(
+                "[FAST_TROT_REAR_TOUCHDOWN] "
+                f"force p95/max="
+                f"{_percentile(fast_trot_stats['rear_touchdown_force'], 95):.2f}/"
+                f"{(max(fast_trot_stats['rear_touchdown_force']) if fast_trot_stats['rear_touchdown_force'] else float('nan')):.2f}N"
+            )
+            print(
+                "[FAST_TROT_REAR_PRESWING] "
+                f"enabled={int(bool(action_term.cfg.rear_preswing_unload_enable))} "
+                f"unload_sign={float(action_term.cfg.rear_unload_sign):+.1f} "
+                f"unload_gate p95/max="
+                f"{_percentile(fast_trot_stats['rear_preswing_unload_gate_max'], 95):.3f}/"
+                f"{(max(fast_trot_stats['rear_preswing_unload_gate_max']) if fast_trot_stats['rear_preswing_unload_gate_max'] else float('nan')):.3f} "
+                f"vmc_fade min/mean="
+                f"{(min(fast_trot_stats['rear_preswing_vmc_fade_min']) if fast_trot_stats['rear_preswing_vmc_fade_min'] else float('nan')):.3f}/"
+                f"{_mean(fast_trot_stats['rear_preswing_vmc_fade_min']):.3f}"
+            )
+            for leg_index in (2, 3):
+                values = fast_trot_stats["rear_preswing_unload_z_abs"][leg_index]
+                print(
+                    "[FAST_TROT_REAR_UNLOAD_Z] "
+                    f"{LEG_NAMES[leg_index]} p95/max="
+                    f"{_percentile(values, 95):.4f}/"
+                    f"{(max(values) if values else float('nan')):.4f}m"
+                )
             for joint_index in (7, 8, 10, 11):
                 values = fast_trot_tau_joint[joint_index]
                 print(
@@ -1401,10 +2013,16 @@ def main():
                 "performance_soft_output",
                 "performance_soft_output_v2",
                 "performance_soft_output_v2_small_fix",
+                "performance_soft_output_v2_light_vmc",
+                "performance_soft_output_v2_light_vmc_balance",
+                "performance_soft_output_v2_light_vmc_balance_v2",
+                "performance_soft_output_v2_light_vmc_balance_v3",
             ):
                 baseline_path = output_path.parent / "fast_diagonal_trot_balanced_mid_performance_safe_baseline.csv"
                 v1_path = output_path.parent / "fast_diagonal_trot_balanced_mid_soft_performance_soft_output.csv"
                 v2_path = output_path.parent / "fast_diagonal_trot_balanced_mid_soft_performance_soft_output_v2.csv"
+                balance_path = output_path.parent / "fast_diagonal_trot_balanced_mid_soft_performance_soft_output_v2_light_vmc_balance.csv"
+                balance_v2_path = output_path.parent / "fast_diagonal_trot_balanced_mid_soft_performance_soft_output_v2_light_vmc_balance_v2.csv"
                 available = {"current": output_path}
                 if baseline_path.exists():
                     available["baseline"] = baseline_path
@@ -1412,7 +2030,44 @@ def main():
                     available["v1"] = v1_path
                 if v2_path.exists() and v2_path.resolve() != output_path.resolve():
                     available["v2"] = v2_path
+                if balance_path.exists() and balance_path.resolve() != output_path.resolve():
+                    available["balance"] = balance_path
+                if balance_v2_path.exists() and balance_v2_path.resolve() != output_path.resolve():
+                    available["balance_v2"] = balance_v2_path
                 summaries = {name: _csv_summary(path) for name, path in available.items()}
+                if "v2" in summaries:
+                    height_delta = summaries["current"]["base_mean"] - summaries["v2"]["base_mean"]
+                    roll_delta = summaries["current"]["roll_p95_deg"] - summaries["v2"]["roll_p95_deg"]
+                    pitch_delta = summaries["current"]["pitch_p95_deg"] - summaries["v2"]["pitch_p95_deg"]
+                    force_delta = summaries["current"]["force_p95"] - summaries["v2"]["force_p95"]
+                    torque_delta = summaries["current"]["tau_p95"] - summaries["v2"]["tau_p95"]
+                    contact_delta = summaries["current"]["contact_1"] - summaries["v2"]["contact_1"]
+                    likely_height_sign_issue = (
+                        safety_profile == "performance_soft_output_v2_light_vmc_balance"
+                        and height_delta < -0.002
+                        and _mean(fast_trot_stats["vmc_height_corr_saturated"]) > 0.20
+                    )
+                    likely_pitch_sign_issue = (
+                        safety_profile == "performance_soft_output_v2_light_vmc_balance"
+                        and pitch_delta > 0.8
+                        and _mean(fast_trot_stats["vmc_pitch_corr_saturated"]) > 0.10
+                    )
+                    likely_roll_sign_issue = (
+                        safety_profile == "performance_soft_output_v2_light_vmc_balance"
+                        and roll_delta > 0.8
+                        and _mean(fast_trot_stats["vmc_roll_corr_saturated"]) > 0.10
+                    )
+                    print(
+                        "[FAST_TROT_BALANCE_V2_JUDGMENT] "
+                        f"height={'improved' if height_delta >= 0.0 else 'worsened'}({height_delta:+.4f}m) "
+                        f"roll={'improved' if roll_delta <= 0.0 else 'worsened'}({roll_delta:+.2f}deg) "
+                        f"pitch={'improved' if pitch_delta <= 0.0 else 'worsened'}({pitch_delta:+.2f}deg) "
+                        f"force={'improved' if force_delta <= 0.0 else 'worsened'}({force_delta:+.2f}N) "
+                        f"contact_1={'improved' if contact_delta <= 0.0 else 'worsened'}({contact_delta:+.3f}) "
+                        f"torque={'improved' if torque_delta <= 0.0 else 'worsened'}({torque_delta:+.2f}Nm) "
+                        f"likely_sign_issue(height/pitch/roll)="
+                        f"{int(likely_height_sign_issue)}/{int(likely_pitch_sign_issue)}/{int(likely_roll_sign_issue)}"
+                    )
                 if "baseline" in summaries:
                     print(
                         f"[FAST_TROT_CSV_COMPARISON] current={safety_profile} "
@@ -1449,7 +2104,7 @@ def main():
                             f"baseline={summaries['baseline'][key]:.4f} "
                             f"delta={summaries['current'][key] - summaries['baseline'][key]:+.4f}"
                         )
-                    for label in ("v1", "v2"):
+                    for label in ("v1", "v2", "balance", "balance_v2"):
                         if label in summaries:
                             print(
                                 f"[FAST_TROT_CSV_COMPARISON_{label.upper()}] "
@@ -1495,10 +2150,29 @@ def main():
                         f"base_height_ok={int(stable_height)} "
                         f"attitude_ok={int(attitude_ok)}"
                     )
+                if "balance" in summaries:
+                    roll_delta = summaries["current"]["roll_p95_deg"] - summaries["balance"]["roll_p95_deg"]
+                    yaw_delta = summaries["current"]["yaw_p95_deg"] - summaries["balance"]["yaw_p95_deg"]
+                    pitch_delta = summaries["current"]["pitch_p95_deg"] - summaries["balance"]["pitch_p95_deg"]
+                    force_delta = summaries["current"]["force_p95"] - summaries["balance"]["force_p95"]
+                    torque_delta = summaries["current"]["tau_p95"] - summaries["balance"]["tau_p95"]
+                    diff_delta = summaries["current"]["diff_p95"] - summaries["balance"]["diff_p95"]
+                    print(
+                        "[FAST_TROT_BALANCE_V2_JUDGMENT] "
+                        f"roll={'improved' if roll_delta <= 0.0 else 'worsened'}({roll_delta:+.2f}deg) "
+                        f"yaw={'improved' if yaw_delta <= 0.0 else 'worsened'}({yaw_delta:+.2f}deg) "
+                        f"pitch={'kept' if pitch_delta <= 0.5 else 'worsened'}({pitch_delta:+.2f}deg) "
+                        f"force={'kept' if force_delta <= 10.0 else 'worsened'}({force_delta:+.2f}N) "
+                        f"torque={'kept' if torque_delta <= 1.0 else 'worsened'}({torque_delta:+.2f}Nm) "
+                        f"q_ref_cmd_diff={'kept' if diff_delta <= 0.03 else 'worsened'}({diff_delta:+.3f}rad) "
+                        f"rear_airborne_RR/RL="
+                        f"{_mean(fast_trot_stats['rr_swing_force_airborne']):.3f}/"
+                        f"{_mean(fast_trot_stats['rl_swing_force_airborne']):.3f}"
+                    )
                 else:
                     print(
-                        "[FAST_TROT_CSV_COMPARISON] baseline file not found: "
-                        f"{baseline_path}. Run the performance_safe baseline command first."
+                        "[FAST_TROT_BALANCE_V2_JUDGMENT] balance comparison file not found: "
+                        f"{balance_path}. Run the balance profile command first."
                     )
         if mode == "rear_lift_test" and rear_lift_samples > 0:
             world_lift = rear_lift_world_max - rear_lift_world_min

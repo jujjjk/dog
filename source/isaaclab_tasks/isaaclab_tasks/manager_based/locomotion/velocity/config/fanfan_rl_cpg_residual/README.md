@@ -348,6 +348,9 @@ performance_safe: keep balanced_v2_mid shape; only compress dangerous peaks
 performance_soft_output: mid_soft gains plus no-overshoot rate limiting and 10/14/17 N.m backoff
 performance_soft_output_v2: reduced preload, faster no-overshoot rate limit, slower stance Kp handoff, higher damping
 performance_soft_output_v2_small_fix: v2 plus phase-switch guard and +4 mm stance height offset
+performance_soft_output_v2_light_vmc: v2 plus small stance/touchdown foot offsets for height, roll, pitch and light placement
+performance_soft_output_v2_light_vmc_balance: v2 plus conservative z-only height/roll/pitch balance VMC; foot placement disabled
+performance_soft_output_v2_light_vmc_balance_v2: balance plus stronger roll damping, very light yaw hip damping and rear preswing unload
 real_safe:         conservative first hardware-proximity check
 ```
 
@@ -361,6 +364,9 @@ performance_safe: continuous warn 8 N.m, soft zone 12..17 N.m, hard 17 N.m
 performance_soft_output: 8 N.m statistics, soft backoff starts at 10 N.m, stronger at 14 N.m, hard 17 N.m
 performance_soft_output_v2: same torque backoff as v1, tuned to reduce bounce and ground-force spikes
 performance_soft_output_v2_small_fix: same v2 preload/rate settings; only guard-window backoff is slightly earlier
+performance_soft_output_v2_light_vmc: same v2 torque backoff; VMC only changes foot targets before IK and does not add RL or full torque VMC
+performance_soft_output_v2_light_vmc_balance: same v2 torque backoff; height_sign=-1, pitch_sign=-1, target_pitch=-0.04 rad, and x/y placement disabled
+performance_soft_output_v2_light_vmc_balance_v2: same balance torque path; adds yaw hip damping and rear preswing unload without changing the diagonal trot phase
 real_safe:         strict conservative budget
 ```
 
@@ -384,6 +390,28 @@ The v2 small-fix profile adds `phase_switch_guard_active`,
 `phase_switch_guard_strength`, `phase_to_switch`, `guard_kp_scale_0..11`, and
 `global_support_height_offset_m`. These fields isolate the rare torque spikes
 near the `0.0/0.5` diagonal pair switch without changing the trot phase.
+
+The v2 light-VMC profile keeps the same diagonal-trot reference and soft output
+chain as v2, then adds small support/touchdown foot offsets before IK. Swing
+mid-phase legs receive zero VMC weight. CSV adds `light_vmc_enabled`,
+`vmc_weight_0..3`, `vmc_foot_z_offset_0..3`,
+`vmc_foot_x_offset_0..3`, `vmc_foot_y_offset_0..3`,
+`vmc_height_corr_z`, `vmc_roll_corr_z`, `vmc_pitch_corr_z`,
+`vmc_foot_x_corr`, `vmc_foot_y_corr`, body-frame base linear velocity, and
+body-frame base angular velocity. This remains reference-only debugging: no
+RL, no policy checkpoint and no full torque VMC.
+
+The balance VMC variant is the first z-only stabilization pass. It keeps
+`performance_soft_output_v2` as the base, disables x/y foot placement, uses
+`target_base_height=0.288 m`, `target_pitch=-0.04 rad`,
+`height_sign=-1`, `roll_sign=+1`, and `pitch_sign=-1`. Use it to check body
+height, roll and pitch before re-enabling any foot-placement correction.
+
+The balance-v2 variant keeps the balance height and pitch signs fixed. It
+slightly increases roll damping, adds a tiny yaw hip differential
+(`yaw_hip_limit=0.010 rad`, `rate=0.002 rad/step`), and fades rear-leg VMC
+while adding a `3 mm` rear preswing unload offset. It is still reference-only:
+no RL, no policy checkpoint, no full torque VMC and no jerk shaper.
 
 Monitor-only, preserving the original CPG target exactly:
 
@@ -446,6 +474,56 @@ spikes and raising the stance height by 4 mm:
   --support_kp_level mid_soft \
   --safety_profile performance_soft_output_v2_small_fix \
   --output logs/reference_debug/fast_diagonal_trot_balanced_mid_soft_performance_soft_output_v2_small_fix.csv
+```
+
+Performance-soft-output v2 with light balance VMC:
+
+```bash
+./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-FastDiagonalTrot-SafeReference-v0 \
+  --num_envs 1 --duration 20 \
+  --trot_preset balanced \
+  --support_kp_level mid_soft \
+  --safety_profile performance_soft_output_v2_light_vmc \
+  --output logs/reference_debug/fast_diagonal_trot_balanced_mid_soft_performance_soft_output_v2_light_vmc.csv
+```
+
+Performance-soft-output v2 with conservative z-only balance VMC:
+
+```bash
+./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-FastDiagonalTrot-SafeReference-v0 \
+  --num_envs 1 --duration 20 \
+  --trot_preset balanced \
+  --support_kp_level mid_soft \
+  --safety_profile performance_soft_output_v2_light_vmc_balance \
+  --output logs/reference_debug/fast_diagonal_trot_balanced_mid_soft_performance_soft_output_v2_light_vmc_balance.csv
+```
+
+Performance-soft-output v2 balance-v2, with light yaw damping and rear
+preswing unload:
+
+```bash
+./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-FastDiagonalTrot-SafeReference-v0 \
+  --num_envs 1 --duration 20 \
+  --trot_preset balanced \
+  --support_kp_level mid_soft \
+  --safety_profile performance_soft_output_v2_light_vmc_balance_v2 \
+  --output logs/reference_debug/fast_diagonal_trot_balanced_mid_soft_performance_soft_output_v2_light_vmc_balance_v2.csv
+```
+
+Performance-soft-output v2 balance-v3, with weaker yaw damping, active phase
+switch guard scaling, and rear touchdown softening:
+
+```bash
+./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-FastDiagonalTrot-SafeReference-v0 \
+  --num_envs 1 --duration 20 \
+  --trot_preset balanced \
+  --support_kp_level mid_soft \
+  --safety_profile performance_soft_output_v2_light_vmc_balance_v3 \
+  --output logs/reference_debug/fast_diagonal_trot_balanced_mid_soft_performance_soft_output_v2_light_vmc_balance_v3.csv
 ```
 
 Baseline comparison for the soft-output run:
