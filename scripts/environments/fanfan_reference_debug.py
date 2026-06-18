@@ -64,6 +64,7 @@ parser.add_argument(
         "performance_soft_output_v2_light_vmc_balance",
         "performance_soft_output_v2_light_vmc_balance_v2",
         "performance_soft_output_v2_light_vmc_balance_v3",
+        "performance_soft_output_v2_light_vmc_balance_v4",
         "real_safe",
     ),
     default="monitor_only",
@@ -330,6 +331,7 @@ def main():
                     "performance_soft_output_v2_light_vmc_balance",
                     "performance_soft_output_v2_light_vmc_balance_v2",
                     "performance_soft_output_v2_light_vmc_balance_v3",
+                    "performance_soft_output_v2_light_vmc_balance_v4",
                 )
                 else "mid"
             )
@@ -373,6 +375,7 @@ def main():
             "performance_soft_output_v2_light_vmc_balance",
             "performance_soft_output_v2_light_vmc_balance_v2",
             "performance_soft_output_v2_light_vmc_balance_v3",
+            "performance_soft_output_v2_light_vmc_balance_v4",
         ) and kp_level == "mid_soft":
             kp_profiles["mid_soft"] = {
                 "swing": (50.0, 80.0, 80.0, 5.0),
@@ -671,7 +674,10 @@ def main():
             env_cfg.actions.joint_pos.sim_motor_strength_scale_range = (1.0, 1.0)
             env_cfg.actions.joint_pos.sim_kp_scale_range = (1.0, 1.0)
             env_cfg.actions.joint_pos.sim_kd_scale_range = (1.0, 1.0)
-        elif safety_profile == "performance_soft_output_v2_light_vmc_balance_v3":
+        elif safety_profile in (
+            "performance_soft_output_v2_light_vmc_balance_v3",
+            "performance_soft_output_v2_light_vmc_balance_v4",
+        ):
             env_cfg.actions.joint_pos.enable_deploy_target_filter = True
             env_cfg.actions.joint_pos.enable_target_rate_limit = True
             env_cfg.actions.joint_pos.enable_target_accel_limit = False
@@ -750,6 +756,37 @@ def main():
             env_cfg.actions.joint_pos.sim_motor_strength_scale_range = (1.0, 1.0)
             env_cfg.actions.joint_pos.sim_kp_scale_range = (1.0, 1.0)
             env_cfg.actions.joint_pos.sim_kd_scale_range = (1.0, 1.0)
+            if safety_profile == "performance_soft_output_v2_light_vmc_balance_v4":
+                env_cfg.actions.joint_pos.rear_preswing_unload_z_m = 0.0
+                env_cfg.actions.joint_pos.rear_touchdown_vmc_ramp = 0.20
+                env_cfg.actions.joint_pos.rear_touchdown_kp_ramp = 0.24
+                env_cfg.actions.joint_pos.rear_touchdown_hip_kp_limit = 58.0
+                env_cfg.actions.joint_pos.rear_touchdown_thigh_kp_limit = 125.0
+                env_cfg.actions.joint_pos.rear_touchdown_calf_kp_limit = 130.0
+                env_cfg.actions.joint_pos.rear_touchdown_kd = 6.2
+                env_cfg.actions.joint_pos.rear_late_swing_guard_enable = True
+                env_cfg.actions.joint_pos.rear_late_swing_phase_start = 0.28
+                env_cfg.actions.joint_pos.rear_late_swing_phase_end = 0.38
+                env_cfg.actions.joint_pos.rear_late_swing_clearance_margin_m = 0.003
+                env_cfg.actions.joint_pos.rear_late_swing_min_height_m = 0.003
+                env_cfg.actions.joint_pos.rear_late_swing_guard_rate_limit_m = 0.001
+                env_cfg.actions.joint_pos.rear_late_swing_clearance_sign = 1.0
+                env_cfg.actions.joint_pos.rear_late_swing_descent_soft_enable = True
+                env_cfg.actions.joint_pos.rear_late_swing_descent_scale = 0.50
+                env_cfg.actions.joint_pos.rear_late_swing_descent_rate_limit_m = 0.001
+                env_cfg.actions.joint_pos.rear_early_contact_guard_enable = True
+                env_cfg.actions.joint_pos.rear_early_contact_force_threshold = 10.0
+                env_cfg.actions.joint_pos.rear_early_contact_phase_start = 0.28
+                env_cfg.actions.joint_pos.rear_early_contact_phase_end = 0.40
+                env_cfg.actions.joint_pos.rear_early_contact_lift_relief_m = 0.002
+                env_cfg.actions.joint_pos.rear_early_contact_relief_sign = 1.0
+                env_cfg.actions.joint_pos.rear_early_contact_kp_scale = 0.60
+                env_cfg.actions.joint_pos.rear_early_contact_hip_kp_limit = 55.0
+                env_cfg.actions.joint_pos.rear_early_contact_thigh_kp_limit = 115.0
+                env_cfg.actions.joint_pos.rear_early_contact_calf_kp_limit = 115.0
+                env_cfg.actions.joint_pos.rear_early_contact_kd = 6.5
+                env_cfg.actions.joint_pos.rear_early_contact_torque_soft_start = 9.0
+                env_cfg.actions.joint_pos.rear_early_contact_torque_soft_full = 13.0
         elif safety_profile == "real_safe":
             env_cfg.actions.joint_pos.enable_deploy_target_filter = True
             env_cfg.actions.joint_pos.enable_target_rate_limit = True
@@ -797,6 +834,7 @@ def main():
                     "performance_soft_output_v2_light_vmc_balance",
                     "performance_soft_output_v2_light_vmc_balance_v2",
                     "performance_soft_output_v2_light_vmc_balance_v3",
+                    "performance_soft_output_v2_light_vmc_balance_v4",
                 )
                 else "mid"
             )
@@ -936,6 +974,7 @@ def main():
         "yaw_sign",
         "rear_preswing_unload_enable",
         "rear_unload_sign",
+        "rear_late_swing_clearance_sign",
         "vmc_height_corr_z",
         "vmc_roll_corr_z",
         "vmc_pitch_corr_z",
@@ -973,6 +1012,10 @@ def main():
         "missed_force_drop_window",
         "state_transition_reason",
         "actual_support_pair",
+        "RR_late_swing_force",
+        "RL_late_swing_force",
+        "RR_mid_swing_force",
+        "RL_mid_swing_force",
     ]
     for prefix in (
         "leg_phase",
@@ -993,6 +1036,15 @@ def main():
         "rear_preswing_unload_z_offset",
         "rear_touchdown_vmc_ramp_weight",
         "rear_touchdown_kp_scale",
+        "rear_late_swing_guard_active",
+        "rear_late_swing_clearance_offset",
+        "rear_late_swing_height",
+        "rear_late_swing_height_error",
+        "rear_late_swing_descent_scale_applied",
+        "rear_early_contact_guard_active",
+        "rear_early_contact_relief_offset",
+        "rear_early_contact_kp_scale",
+        "rear_touchdown_kp_ramp_weight",
         "joint_limit_clip_mask",
         "rate_limit_clip_mask",
         "acceleration_clip_mask",
@@ -1064,6 +1116,15 @@ def main():
                     "rear_preswing_unload_z_offset",
                     "rear_touchdown_vmc_ramp_weight",
                     "rear_touchdown_kp_scale",
+                    "rear_late_swing_guard_active",
+                    "rear_late_swing_clearance_offset",
+                    "rear_late_swing_height",
+                    "rear_late_swing_height_error",
+                    "rear_late_swing_descent_scale_applied",
+                    "rear_early_contact_guard_active",
+                    "rear_early_contact_relief_offset",
+                    "rear_early_contact_kp_scale",
+                    "rear_touchdown_kp_ramp_weight",
                     "predicted_foot_height",
                     "foot_world_z",
                     "foot_sphere_bottom_z",
@@ -1169,6 +1230,12 @@ def main():
         "rl_swing_force_mid": [],
         "rear_swing_force_mid": [],
         "rear_swing_force_touchdown": [],
+        "rr_late_swing_force": [],
+        "rl_late_swing_force": [],
+        "rr_late_swing_guard_active": [],
+        "rl_late_swing_guard_active": [],
+        "rr_early_contact_guard_active": [],
+        "rl_early_contact_guard_active": [],
     }
     fast_trot_tau_joint = [[] for _ in JOINT_NAMES]
     fast_trot_force_leg = [[] for _ in LEG_NAMES]
@@ -1292,6 +1359,18 @@ def main():
                     6: "force_drop_confirmed_during_wait",
                     7: "force_drop_timeout",
                 }.get(transition_code, f"unknown_{transition_code}")
+                leg_phases_for_row = _row_vector(debug["leg_phase"])
+                swing_mask_for_row = _row_vector(debug["swing_mask"].to(torch.float32))
+
+                def _rear_phase_force(leg_index: int, start: float, end: float) -> float:
+                    if swing_mask_for_row[leg_index] > 0.5 and start <= leg_phases_for_row[leg_index] <= end:
+                        return foot_forces[leg_index]
+                    return float("nan")
+
+                rr_late_swing_force = _rear_phase_force(2, 0.28, 0.40)
+                rl_late_swing_force = _rear_phase_force(3, 0.28, 0.40)
+                rr_mid_swing_force = _rear_phase_force(2, 0.25, 0.70)
+                rl_mid_swing_force = _rear_phase_force(3, 0.25, 0.70)
                 if mode == "rear_lift_test":
                     rear_phase = int(_scalar(debug["rear_lift_phase"]))
                     rear_lift_max_phase = max(rear_lift_max_phase, rear_phase)
@@ -1409,6 +1488,8 @@ def main():
                     phases = _row_vector(debug["leg_phase"])
                     swings = _row_vector(debug["swing_mask"].to(torch.float32))
                     forces = _row_vector(debug["foot_normal_force"])
+                    late_guard = _row_vector(debug["rear_late_swing_guard_active"].to(torch.float32))
+                    early_contact_guard = _row_vector(debug["rear_early_contact_guard_active"].to(torch.float32))
                     for front_index in (0, 1):
                         if swings[front_index] > 0.5:
                             fast_trot_stats["front_swing_force_airborne"].append(
@@ -1429,6 +1510,15 @@ def main():
                             elif phases[rear_index] > 0.70:
                                 fast_trot_stats["rear_swing_force_touchdown"].append(float(forces[rear_index] < 3.0))
                                 fast_trot_stats["rear_touchdown_force"].append(forces[rear_index])
+                            if 0.28 <= phases[rear_index] <= 0.40:
+                                if rear_index == 2:
+                                    fast_trot_stats["rr_late_swing_force"].append(forces[rear_index])
+                                    fast_trot_stats["rr_late_swing_guard_active"].append(late_guard[rear_index])
+                                    fast_trot_stats["rr_early_contact_guard_active"].append(early_contact_guard[rear_index])
+                                else:
+                                    fast_trot_stats["rl_late_swing_force"].append(forces[rear_index])
+                                    fast_trot_stats["rl_late_swing_guard_active"].append(late_guard[rear_index])
+                                    fast_trot_stats["rl_early_contact_guard_active"].append(early_contact_guard[rear_index])
                     tau_max = _scalar(debug["tau_est_cmd_final_max"])
                     if tau_max > max_spike["tau"]:
                         max_spike.update(
@@ -1547,6 +1637,7 @@ def main():
                     _scalar(debug["light_yaw_sign"]),
                     int(bool(_scalar(debug["rear_preswing_unload_enabled"]))),
                     _scalar(debug["rear_unload_sign"]),
+                    _scalar(debug["rear_late_swing_clearance_sign"]),
                     _scalar(debug["vmc_height_corr_z"]),
                     _scalar(debug["vmc_roll_corr_z"]),
                     _scalar(debug["vmc_pitch_corr_z"]),
@@ -1584,6 +1675,10 @@ def main():
                     int(bool(_scalar(debug["missed_force_drop_window"]))),
                     state_transition_reason,
                     actual_support_pair,
+                    rr_late_swing_force,
+                    rl_late_swing_force,
+                    rr_mid_swing_force,
+                    rl_mid_swing_force,
                 ]
                 row += _row_vector(debug["leg_phase"])
                 row += _row_vector(debug["swing_mask"].to(torch.float32))
@@ -1603,6 +1698,15 @@ def main():
                 row += _row_vector(debug["rear_preswing_unload_z_offset"])
                 row += _row_vector(debug["rear_touchdown_vmc_ramp_weight"])
                 row += _row_vector(debug["rear_touchdown_kp_scale"])
+                row += _row_vector(debug["rear_late_swing_guard_active"].to(torch.float32))
+                row += _row_vector(debug["rear_late_swing_clearance_offset"])
+                row += _row_vector(debug["rear_late_swing_height"])
+                row += _row_vector(debug["rear_late_swing_height_error"])
+                row += _row_vector(debug["rear_late_swing_descent_scale_applied"])
+                row += _row_vector(debug["rear_early_contact_guard_active"].to(torch.float32))
+                row += _row_vector(debug["rear_early_contact_relief_offset"])
+                row += _row_vector(debug["rear_early_contact_kp_scale"])
+                row += _row_vector(debug["rear_touchdown_kp_ramp_weight"])
                 row += _row_vector(debug["joint_limit_clip_mask"].to(torch.float32))
                 row += _row_vector(debug["rate_limit_clip_mask"].to(torch.float32))
                 row += _row_vector(debug["acceleration_clip_mask"].to(torch.float32))
@@ -2006,6 +2110,27 @@ def main():
                 f"{(max(fast_trot_stats['rear_touchdown_force']) if fast_trot_stats['rear_touchdown_force'] else float('nan')):.2f}N"
             )
             print(
+                "[FAST_TROT_REAR_LATE_SWING] "
+                f"RR_force p95/max="
+                f"{_percentile(fast_trot_stats['rr_late_swing_force'], 95):.2f}/"
+                f"{(max(fast_trot_stats['rr_late_swing_force']) if fast_trot_stats['rr_late_swing_force'] else float('nan')):.2f}N "
+                f"RL_force p95/max="
+                f"{_percentile(fast_trot_stats['rl_late_swing_force'], 95):.2f}/"
+                f"{(max(fast_trot_stats['rl_late_swing_force']) if fast_trot_stats['rl_late_swing_force'] else float('nan')):.2f}N "
+                f"late_guard RR/RL={_mean(fast_trot_stats['rr_late_swing_guard_active']):.3f}/"
+                f"{_mean(fast_trot_stats['rl_late_swing_guard_active']):.3f} "
+                f"early_contact_guard RR/RL={_mean(fast_trot_stats['rr_early_contact_guard_active']):.3f}/"
+                f"{_mean(fast_trot_stats['rl_early_contact_guard_active']):.3f}"
+            )
+            if (
+                safety_profile == "performance_soft_output_v2_light_vmc_balance_v4"
+                and max(fast_trot_stats["rl_late_swing_force"] or [0.0]) > 300.0
+            ):
+                print(
+                    "[FAST_TROT_REAR_LATE_SWING_WARNING] RL late-swing force is still high; "
+                    "rear_late_swing_clearance_sign may need checking before hardware tests."
+                )
+            print(
                 "[FAST_TROT_REAR_PRESWING] "
                 f"enabled={int(bool(action_term.cfg.rear_preswing_unload_enable))} "
                 f"unload_sign={float(action_term.cfg.rear_unload_sign):+.1f} "
@@ -2047,12 +2172,14 @@ def main():
                 "performance_soft_output_v2_light_vmc_balance",
                 "performance_soft_output_v2_light_vmc_balance_v2",
                 "performance_soft_output_v2_light_vmc_balance_v3",
+                "performance_soft_output_v2_light_vmc_balance_v4",
             ):
                 baseline_path = output_path.parent / "fast_diagonal_trot_balanced_mid_performance_safe_baseline.csv"
                 v1_path = output_path.parent / "fast_diagonal_trot_balanced_mid_soft_performance_soft_output.csv"
                 v2_path = output_path.parent / "fast_diagonal_trot_balanced_mid_soft_performance_soft_output_v2.csv"
                 balance_path = output_path.parent / "fast_diagonal_trot_balanced_mid_soft_performance_soft_output_v2_light_vmc_balance.csv"
                 balance_v2_path = output_path.parent / "fast_diagonal_trot_balanced_mid_soft_performance_soft_output_v2_light_vmc_balance_v2.csv"
+                balance_v3_path = output_path.parent / "fast_diagonal_trot_balanced_mid_soft_performance_soft_output_v2_light_vmc_balance_v3.csv"
                 available = {"current": output_path}
                 if baseline_path.exists():
                     available["baseline"] = baseline_path
@@ -2064,6 +2191,8 @@ def main():
                     available["balance"] = balance_path
                 if balance_v2_path.exists() and balance_v2_path.resolve() != output_path.resolve():
                     available["balance_v2"] = balance_v2_path
+                if balance_v3_path.exists() and balance_v3_path.resolve() != output_path.resolve():
+                    available["balance_v3"] = balance_v3_path
                 summaries = {name: _csv_summary(path) for name, path in available.items()}
                 if "v2" in summaries:
                     height_delta = summaries["current"]["base_mean"] - summaries["v2"]["base_mean"]
@@ -2134,7 +2263,7 @@ def main():
                             f"baseline={summaries['baseline'][key]:.4f} "
                             f"delta={summaries['current'][key] - summaries['baseline'][key]:+.4f}"
                         )
-                    for label in ("v1", "v2", "balance", "balance_v2"):
+                    for label in ("v1", "v2", "balance", "balance_v2", "balance_v3"):
                         if label in summaries:
                             print(
                                 f"[FAST_TROT_CSV_COMPARISON_{label.upper()}] "

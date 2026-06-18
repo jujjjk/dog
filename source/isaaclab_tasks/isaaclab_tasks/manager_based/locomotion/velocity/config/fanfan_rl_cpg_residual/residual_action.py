@@ -175,6 +175,33 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
         self.last_phase_switch_kp_scale_applied = torch.ones(
             self.num_envs, device=self.device
         )
+        self.last_rear_late_swing_guard_active = torch.zeros(
+            self.num_envs, 4, device=self.device, dtype=torch.bool
+        )
+        self.last_rear_late_swing_clearance_offset = torch.zeros(
+            self.num_envs, 4, device=self.device
+        )
+        self.last_rear_late_swing_height = torch.zeros(
+            self.num_envs, 4, device=self.device
+        )
+        self.last_rear_late_swing_height_error = torch.zeros(
+            self.num_envs, 4, device=self.device
+        )
+        self.last_rear_late_swing_descent_scale_applied = torch.ones(
+            self.num_envs, 4, device=self.device
+        )
+        self.last_rear_early_contact_guard_active = torch.zeros(
+            self.num_envs, 4, device=self.device, dtype=torch.bool
+        )
+        self.last_rear_early_contact_relief_offset = torch.zeros(
+            self.num_envs, 4, device=self.device
+        )
+        self.last_rear_early_contact_kp_scale = torch.ones(
+            self.num_envs, 4, device=self.device
+        )
+        self.last_rear_touchdown_kp_ramp_weight = torch.zeros(
+            self.num_envs, 4, device=self.device
+        )
         self.last_debug_kp = torch.full_like(
             self.processed_actions, max(float(cfg.sim_kp), 1.0e-6)
         )
@@ -530,6 +557,7 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
         kp_eff: torch.Tensor,
         kd_eff: torch.Tensor,
         guard_strength: torch.Tensor | None = None,
+        early_contact_guard_strength: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Softly back off high-torque targets without turning the path into real_safe."""
         tau = self._pd_torque_for(q_target, kp_eff, kd_eff)
@@ -540,6 +568,10 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
             guard = guard_strength.unsqueeze(1).expand_as(abs_tau)
             soft_start = soft_start * (1.0 - guard) + float(self.cfg.fast_trot_guard_soft_start_torque) * guard
             soft_full = soft_full * (1.0 - guard) + float(self.cfg.fast_trot_guard_soft_full_torque) * guard
+        if early_contact_guard_strength is not None:
+            early_guard = early_contact_guard_strength.unsqueeze(1).expand_as(abs_tau)
+            soft_start = soft_start * (1.0 - early_guard) + float(self.cfg.rear_early_contact_torque_soft_start) * early_guard
+            soft_full = soft_full * (1.0 - early_guard) + float(self.cfg.rear_early_contact_torque_soft_full) * early_guard
         hard = float(self.cfg.sim_hard_torque_budget)
         soft_t = torch.clamp(
             (abs_tau - soft_start) / torch.clamp(soft_full - soft_start, min=1.0e-6),
@@ -942,6 +974,7 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
             "performance_soft_output_v2_light_vmc_balance",
             "performance_soft_output_v2_light_vmc_balance_v2",
             "performance_soft_output_v2_light_vmc_balance_v3",
+            "performance_soft_output_v2_light_vmc_balance_v4",
         )
         if not enabled:
             self.last_light_vmc_weight.zero_()
@@ -1212,6 +1245,7 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
             "performance_soft_output_v2_light_vmc_balance",
             "performance_soft_output_v2_light_vmc_balance_v2",
             "performance_soft_output_v2_light_vmc_balance_v3",
+            "performance_soft_output_v2_light_vmc_balance_v4",
         ):
             guard_strength.zero_()
         self.last_phase_to_switch[:] = phase_to_switch
@@ -1270,6 +1304,7 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
             "performance_soft_output_v2_light_vmc_balance",
             "performance_soft_output_v2_light_vmc_balance_v2",
             "performance_soft_output_v2_light_vmc_balance_v3",
+            "performance_soft_output_v2_light_vmc_balance_v4",
         )
         if profile in soft_output_profiles:
             ramp_in = max(1.0e-6, float(self.cfg.fast_trot_support_preload_ramp_in_phase))
@@ -1284,6 +1319,7 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
                 "performance_soft_output_v2_light_vmc_balance",
                 "performance_soft_output_v2_light_vmc_balance_v2",
                 "performance_soft_output_v2_light_vmc_balance_v3",
+                "performance_soft_output_v2_light_vmc_balance_v4",
             ):
                 preload_gate = torch.clamp(
                     preload_gate,
@@ -1297,6 +1333,7 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
                 "performance_soft_output_v2_light_vmc_balance",
                 "performance_soft_output_v2_light_vmc_balance_v2",
                 "performance_soft_output_v2_light_vmc_balance_v3",
+                "performance_soft_output_v2_light_vmc_balance_v4",
             ):
                 support_preload_gate = torch.clamp(
                     support_preload_gate,
@@ -1347,6 +1384,75 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
         self.last_rear_preswing_unload_z_offset[:] = rear_unload_offset
         x_target = x_target + vmc_x_offset
         z_target = z_target + vmc_z_offset + rear_unload_offset
+        self.last_rear_late_swing_guard_active.zero_()
+        self.last_rear_late_swing_height.zero_()
+        self.last_rear_late_swing_height_error.zero_()
+        self.last_rear_late_swing_descent_scale_applied.fill_(1.0)
+        self.last_rear_early_contact_guard_active.zero_()
+        self.last_rear_early_contact_relief_offset.zero_()
+        if profile == "performance_soft_output_v2_light_vmc_balance_v4":
+            rear_mask = torch.tensor((0.0, 0.0, 1.0, 1.0), device=device, dtype=dtype).unsqueeze(0)
+            late_start = float(self.cfg.rear_late_swing_phase_start)
+            late_end = max(late_start + 1.0e-6, float(self.cfg.rear_late_swing_phase_end))
+            late_gate = self.reference._smootherstep01(
+                torch.clamp((leg_phase - late_start) / (late_end - late_start), 0.0, 1.0)
+            )
+            late_gate *= 1.0 - self.reference._smootherstep01(
+                torch.clamp((leg_phase - late_end) / 0.02, 0.0, 1.0)
+            )
+            late_gate = late_gate * swing_mask.to(dtype) * rear_mask
+            rear_height = (z_target - z_default) * rear_mask
+            min_height = float(self.cfg.rear_late_swing_min_height_m)
+            height_error = torch.clamp(
+                min_height + float(self.cfg.rear_late_swing_clearance_margin_m) - rear_height,
+                min=0.0,
+            ) * late_gate
+            if bool(self.cfg.rear_late_swing_descent_soft_enable):
+                descent_scale = 1.0 - late_gate * (1.0 - float(self.cfg.rear_late_swing_descent_scale))
+                z_target = z_target + torch.clamp(rear_height, min=0.0) * (1.0 - descent_scale)
+                self.last_rear_late_swing_descent_scale_applied[:] = descent_scale
+            if bool(self.cfg.rear_late_swing_guard_enable):
+                desired_clearance = (
+                    float(self.cfg.rear_late_swing_clearance_sign)
+                    * torch.clamp(height_error, max=0.006)
+                )
+                rate = float(self.cfg.rear_late_swing_guard_rate_limit_m)
+                clearance_offset = self.last_rear_late_swing_clearance_offset + torch.clamp(
+                    desired_clearance - self.last_rear_late_swing_clearance_offset,
+                    min=-rate,
+                    max=rate,
+                )
+                z_target = z_target + clearance_offset
+                self.last_rear_late_swing_clearance_offset[:] = clearance_offset
+                self.last_rear_late_swing_guard_active[:] = height_error > 1.0e-6
+            else:
+                self.last_rear_late_swing_clearance_offset.zero_()
+            if bool(self.cfg.rear_early_contact_guard_enable):
+                forces = self._foot_normal_forces().to(dtype)
+                contact_start = float(self.cfg.rear_early_contact_phase_start)
+                contact_end = max(contact_start + 1.0e-6, float(self.cfg.rear_early_contact_phase_end))
+                contact_phase = (leg_phase >= contact_start) & (leg_phase <= contact_end)
+                contact_guard = (
+                    contact_phase
+                    & (swing_mask | (touchdown_blend > 1.0e-6))
+                    & (forces > float(self.cfg.rear_early_contact_force_threshold))
+                    & (rear_mask > 0.5)
+                )
+                desired_relief = (
+                    contact_guard.to(dtype)
+                    * float(self.cfg.rear_early_contact_relief_sign)
+                    * float(self.cfg.rear_early_contact_lift_relief_m)
+                )
+                z_target = z_target + desired_relief
+                self.last_rear_early_contact_guard_active[:] = contact_guard
+                self.last_rear_early_contact_relief_offset[:] = desired_relief
+            self.last_rear_late_swing_height[:] = rear_height
+            self.last_rear_late_swing_height_error[:] = height_error
+        else:
+            self.last_rear_late_swing_clearance_offset.zero_()
+            self.last_rear_late_swing_descent_scale_applied.fill_(1.0)
+            self.last_rear_early_contact_kp_scale.fill_(1.0)
+            self.last_rear_touchdown_kp_ramp_weight.zero_()
         thigh_target, calf_target = self.reference._inverse_sagittal(x_target, z_target)
         q_policy[:, 1::3] = thigh_target
         q_policy[:, 2::3] = calf_target
@@ -1445,6 +1551,8 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
         profile = str(self.cfg.fast_trot_safety_profile)
         self.last_guard_kp_scale.zero_()
         self.last_rear_touchdown_kp_scale.fill_(1.0)
+        self.last_rear_early_contact_kp_scale.fill_(1.0)
+        self.last_rear_touchdown_kp_ramp_weight.zero_()
         self.last_phase_switch_kp_scale_applied.fill_(1.0)
         for leg_index in range(4):
             cols = slice(leg_index * 3, leg_index * 3 + 3)
@@ -1457,6 +1565,7 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
                 "performance_soft_output_v2_light_vmc_balance",
                 "performance_soft_output_v2_light_vmc_balance_v2",
                 "performance_soft_output_v2_light_vmc_balance_v3",
+                "performance_soft_output_v2_light_vmc_balance_v4",
             ) and touchdown_blend is not None and early_stance_gate is not None:
                 touchdown = touchdown_blend[:, leg_index].unsqueeze(1)
                 early = early_stance_gate[:, leg_index].unsqueeze(1)
@@ -1468,8 +1577,9 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
                     preload = preload_gate[:, leg_index].unsqueeze(1) * stance
                     leg_kp = leg_kp * (1.0 - preload) + support_kp.unsqueeze(0) * preload
                 if phase_switch_guard_strength is not None and profile in (
-                    "performance_soft_output_v2_small_fix",
-                    "performance_soft_output_v2_light_vmc_balance_v3",
+                "performance_soft_output_v2_small_fix",
+                "performance_soft_output_v2_light_vmc_balance_v3",
+                "performance_soft_output_v2_light_vmc_balance_v4",
                 ):
                     guard = phase_switch_guard_strength.unsqueeze(1) * stance
                     leg_kp = leg_kp * (1.0 - guard) + guard_kp.unsqueeze(0) * guard
@@ -1477,14 +1587,17 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
                     self.last_phase_switch_kp_scale_applied[:] = 1.0 - phase_switch_guard_strength * (
                         1.0 - float(self.cfg.fast_trot_phase_switch_kp_scale)
                     )
-                if profile == "performance_soft_output_v2_light_vmc_balance_v3" and leg_index >= 2:
+                if profile in (
+                    "performance_soft_output_v2_light_vmc_balance_v3",
+                    "performance_soft_output_v2_light_vmc_balance_v4",
+                ) and leg_index >= 2:
                     rear_touchdown = torch.maximum(touchdown, early)
                     rear_touchdown = rear_touchdown * torch.clamp(
                         (~leg_swing).to(dtype) + touchdown, 0.0, 1.0
                     )
                     rear_limit_kp = torch.tensor(
                         (
-                            float(self.cfg.fast_trot_touchdown_hip_kp),
+                            float(self.cfg.rear_touchdown_hip_kp_limit),
                             float(self.cfg.rear_touchdown_thigh_kp_limit),
                             float(self.cfg.rear_touchdown_calf_kp_limit),
                         ),
@@ -1500,6 +1613,29 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
                         1.0 - rear_touchdown * (1.0 - float(self.cfg.rear_touchdown_kp_scale)),
                         dim=1,
                     )
+                    self.last_rear_touchdown_kp_ramp_weight[:, leg_index] = torch.squeeze(
+                        rear_touchdown, dim=1
+                    )
+                if profile == "performance_soft_output_v2_light_vmc_balance_v4" and leg_index >= 2:
+                    early_contact = self.last_rear_early_contact_guard_active[:, leg_index].to(dtype).unsqueeze(1)
+                    early_limit_kp = torch.tensor(
+                        (
+                            float(self.cfg.rear_early_contact_hip_kp_limit),
+                            float(self.cfg.rear_early_contact_thigh_kp_limit),
+                            float(self.cfg.rear_early_contact_calf_kp_limit),
+                        ),
+                        device=self.device,
+                        dtype=dtype,
+                    ).unsqueeze(0)
+                    early_soft_kp = torch.minimum(
+                        leg_kp * float(self.cfg.rear_early_contact_kp_scale),
+                        early_limit_kp,
+                    )
+                    leg_kp = leg_kp * (1.0 - early_contact) + early_soft_kp * early_contact
+                    self.last_rear_early_contact_kp_scale[:, leg_index] = torch.squeeze(
+                        1.0 - early_contact * (1.0 - float(self.cfg.rear_early_contact_kp_scale)),
+                        dim=1,
+                    )
                 leg_kd = torch.full((self.num_envs, 3), float(self.cfg.fast_trot_support_kd), device=self.device, dtype=dtype)
                 leg_kd = torch.where(
                     leg_swing,
@@ -1508,9 +1644,15 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
                 )
                 leg_kd = leg_kd * (1.0 - touchdown) + float(self.cfg.fast_trot_touchdown_kd) * touchdown
                 leg_kd = leg_kd * (1.0 - early) + float(self.cfg.fast_trot_early_stance_kd) * early
-                if profile == "performance_soft_output_v2_light_vmc_balance_v3" and leg_index >= 2:
+                if profile in (
+                    "performance_soft_output_v2_light_vmc_balance_v3",
+                    "performance_soft_output_v2_light_vmc_balance_v4",
+                ) and leg_index >= 2:
                     rear_touchdown = torch.maximum(touchdown, early)
                     leg_kd = leg_kd * (1.0 - rear_touchdown) + float(self.cfg.rear_touchdown_kd) * rear_touchdown
+                if profile == "performance_soft_output_v2_light_vmc_balance_v4" and leg_index >= 2:
+                    early_contact = self.last_rear_early_contact_guard_active[:, leg_index].to(dtype).unsqueeze(1)
+                    leg_kd = leg_kd * (1.0 - early_contact) + float(self.cfg.rear_early_contact_kd) * early_contact
                 if phase_switch_guard_strength is not None and profile in (
                     "performance_soft_output_v2_small_fix",
                     "performance_soft_output_v2_light_vmc_balance_v3",
@@ -1672,6 +1814,7 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
             "performance_soft_output_v2_light_vmc_balance",
             "performance_soft_output_v2_light_vmc_balance_v2",
             "performance_soft_output_v2_light_vmc_balance_v3",
+            "performance_soft_output_v2_light_vmc_balance_v4",
         ):
             limit_budget = torch.full_like(torque_budget, float(self.cfg.sim_hard_torque_budget))
         else:
@@ -1699,6 +1842,7 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
                 "performance_soft_output_v2_light_vmc_balance",
                 "performance_soft_output_v2_light_vmc_balance_v2",
                 "performance_soft_output_v2_light_vmc_balance_v3",
+                "performance_soft_output_v2_light_vmc_balance_v4",
             ):
                 max_step = rate_limit * dt
                 target_step = q_raw - self._q_last_cmd
@@ -1746,13 +1890,20 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
                 "performance_soft_output_v2_light_vmc_balance",
                 "performance_soft_output_v2_light_vmc_balance_v2",
                 "performance_soft_output_v2_light_vmc_balance_v3",
+                "performance_soft_output_v2_light_vmc_balance_v4",
             ):
                 guard_for_torque = (
                     self.last_phase_switch_guard_strength
                     if profile in (
                         "performance_soft_output_v2_small_fix",
                         "performance_soft_output_v2_light_vmc_balance_v3",
+                        "performance_soft_output_v2_light_vmc_balance_v4",
                     )
+                    else None
+                )
+                early_contact_guard = (
+                    torch.max(self.last_rear_early_contact_guard_active.to(q_raw.dtype), dim=1).values
+                    if profile == "performance_soft_output_v2_light_vmc_balance_v4"
                     else None
                 )
                 q_after_torque = self._performance_soft_output_torque_target(
@@ -1762,6 +1913,7 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
                     kp_eff,
                     kd_eff,
                     guard_strength=guard_for_torque,
+                    early_contact_guard_strength=early_contact_guard,
                 )
             else:
                 q_after_torque = q_current + torch.clamp(
@@ -1900,6 +2052,15 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
         self.last_rear_preswing_unload_z_offset[env_ids] = 0.0
         self.last_rear_touchdown_vmc_ramp_weight[env_ids] = 0.0
         self.last_rear_touchdown_kp_scale[env_ids] = 1.0
+        self.last_rear_late_swing_guard_active[env_ids] = False
+        self.last_rear_late_swing_clearance_offset[env_ids] = 0.0
+        self.last_rear_late_swing_height[env_ids] = 0.0
+        self.last_rear_late_swing_height_error[env_ids] = 0.0
+        self.last_rear_late_swing_descent_scale_applied[env_ids] = 1.0
+        self.last_rear_early_contact_guard_active[env_ids] = False
+        self.last_rear_early_contact_relief_offset[env_ids] = 0.0
+        self.last_rear_early_contact_kp_scale[env_ids] = 1.0
+        self.last_rear_touchdown_kp_ramp_weight[env_ids] = 0.0
         self.last_phase_switch_vmc_weight_scale_applied[env_ids] = 1.0
         self.last_phase_switch_yaw_weight_scale_applied[env_ids] = 1.0
         self.last_phase_switch_kp_scale_applied[env_ids] = 1.0
@@ -2094,6 +2255,7 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
                         "performance_soft_output_v2_light_vmc_balance",
                         "performance_soft_output_v2_light_vmc_balance_v2",
                         "performance_soft_output_v2_light_vmc_balance_v3",
+                        "performance_soft_output_v2_light_vmc_balance_v4",
                     ),
                     device=self.device,
                     dtype=torch.bool,
@@ -2167,6 +2329,20 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
                 "rear_preswing_unload_z_offset": self.last_rear_preswing_unload_z_offset,
                 "rear_touchdown_vmc_ramp_weight": self.last_rear_touchdown_vmc_ramp_weight,
                 "rear_touchdown_kp_scale": self.last_rear_touchdown_kp_scale,
+                "rear_late_swing_guard_active": self.last_rear_late_swing_guard_active,
+                "rear_late_swing_clearance_offset": self.last_rear_late_swing_clearance_offset,
+                "rear_late_swing_clearance_sign": torch.full(
+                    (self.num_envs,),
+                    float(self.cfg.rear_late_swing_clearance_sign),
+                    device=self.device,
+                ),
+                "rear_late_swing_height": self.last_rear_late_swing_height,
+                "rear_late_swing_height_error": self.last_rear_late_swing_height_error,
+                "rear_late_swing_descent_scale_applied": self.last_rear_late_swing_descent_scale_applied,
+                "rear_early_contact_guard_active": self.last_rear_early_contact_guard_active,
+                "rear_early_contact_relief_offset": self.last_rear_early_contact_relief_offset,
+                "rear_early_contact_kp_scale": self.last_rear_early_contact_kp_scale,
+                "rear_touchdown_kp_ramp_weight": self.last_rear_touchdown_kp_ramp_weight,
                 "vmc_weight": self.last_light_vmc_weight,
                 "vmc_height_corr_z": self.last_light_vmc_height_corr_z,
                 "vmc_roll_corr_z": self.last_light_vmc_roll_corr_z,
@@ -2334,9 +2510,33 @@ class WaveResidualJointPositionActionCfg(DeployFilteredJointPositionActionCfg):
     rear_touchdown_vmc_ramp: float = 0.16
     rear_touchdown_kp_ramp: float = 0.18
     rear_touchdown_kp_scale: float = 0.75
+    rear_touchdown_hip_kp_limit: float = 55.0
     rear_touchdown_thigh_kp_limit: float = 125.0
     rear_touchdown_calf_kp_limit: float = 135.0
     rear_touchdown_kd: float = 6.2
+    rear_late_swing_guard_enable: bool = False
+    rear_late_swing_phase_start: float = 0.28
+    rear_late_swing_phase_end: float = 0.38
+    rear_late_swing_clearance_margin_m: float = 0.003
+    rear_late_swing_min_height_m: float = 0.003
+    rear_late_swing_guard_rate_limit_m: float = 0.001
+    rear_late_swing_clearance_sign: float = 1.0
+    rear_late_swing_descent_soft_enable: bool = False
+    rear_late_swing_descent_scale: float = 0.50
+    rear_late_swing_descent_rate_limit_m: float = 0.001
+    rear_early_contact_guard_enable: bool = False
+    rear_early_contact_force_threshold: float = 10.0
+    rear_early_contact_phase_start: float = 0.28
+    rear_early_contact_phase_end: float = 0.40
+    rear_early_contact_lift_relief_m: float = 0.002
+    rear_early_contact_relief_sign: float = 1.0
+    rear_early_contact_kp_scale: float = 0.60
+    rear_early_contact_hip_kp_limit: float = 55.0
+    rear_early_contact_thigh_kp_limit: float = 115.0
+    rear_early_contact_calf_kp_limit: float = 115.0
+    rear_early_contact_kd: float = 6.5
+    rear_early_contact_torque_soft_start: float = 9.0
+    rear_early_contact_torque_soft_full: float = 13.0
     sim_hard_torque_budget: float = 17.0
     diagnostic_foot_sphere_radius_m: float = 0.018
     joint_limit_warning_margin_rad: float = 0.02

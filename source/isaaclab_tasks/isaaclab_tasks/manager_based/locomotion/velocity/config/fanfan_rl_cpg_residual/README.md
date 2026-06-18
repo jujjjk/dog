@@ -387,6 +387,8 @@ performance_soft_output_v2_small_fix: v2 plus phase-switch guard and +4 mm stanc
 performance_soft_output_v2_light_vmc: v2 plus small stance/touchdown foot offsets for height, roll, pitch and light placement
 performance_soft_output_v2_light_vmc_balance: v2 plus conservative z-only height/roll/pitch balance VMC; foot placement disabled
 performance_soft_output_v2_light_vmc_balance_v2: balance plus stronger roll damping, very light yaw hip damping and rear preswing unload
+performance_soft_output_v2_light_vmc_balance_v3: balance-v2 with weaker yaw damping, phase-switch guard scaling and rear touchdown softening
+performance_soft_output_v2_light_vmc_balance_v4: v3 plus RR/RL late-swing clearance and early-contact soft guard
 real_safe:         conservative first hardware-proximity check
 ```
 
@@ -403,6 +405,8 @@ performance_soft_output_v2_small_fix: same v2 preload/rate settings; only guard-
 performance_soft_output_v2_light_vmc: same v2 torque backoff; VMC only changes foot targets before IK and does not add RL or full torque VMC
 performance_soft_output_v2_light_vmc_balance: same v2 torque backoff; height_sign=-1, pitch_sign=-1, target_pitch=-0.04 rad, and x/y placement disabled
 performance_soft_output_v2_light_vmc_balance_v2: same balance torque path; adds yaw hip damping and rear preswing unload without changing the diagonal trot phase
+performance_soft_output_v2_light_vmc_balance_v3: same balance-v2 torque path; scales VMC/yaw/Kp around diagonal phase switches and softens rear touchdown
+performance_soft_output_v2_light_vmc_balance_v4: same v3 base; only adds RR/RL late-swing clearance, descent softening and early-contact backoff
 real_safe:         strict conservative budget
 ```
 
@@ -448,6 +452,19 @@ slightly increases roll damping, adds a tiny yaw hip differential
 (`yaw_hip_limit=0.010 rad`, `rate=0.002 rad/step`), and fades rear-leg VMC
 while adding a `3 mm` rear preswing unload offset. It is still reference-only:
 no RL, no policy checkpoint, no full torque VMC and no jerk shaper.
+
+The balance-v3 variant keeps the diagonal trot phase and VMC direction from
+balance-v2, weakens yaw damping, and adds a phase-switch guard that scales VMC,
+yaw and Kp near pair handoff. It also softens RR/RL rear touchdown so rare phase
+switch spikes can be diagnosed separately from ordinary mid-swing clearance.
+
+The balance-v4 variant is a local late-swing/touchdown repair on top of v3. It
+does not increase VMC authority or change gait timing. RR/RL rear legs get a
+small rate-limited clearance guard during late swing, a softer descent into
+touchdown, and an early-contact soft guard that lowers rear-leg Kp and starts
+torque backoff earlier if contact force appears before clean touchdown. Use v4
+as a reference-only low-risk hardware-candidate check, not as an RL training
+entry point.
 
 Monitor-only, preserving the original CPG target exactly:
 
@@ -560,6 +577,19 @@ switch guard scaling, and rear touchdown softening:
   --support_kp_level mid_soft \
   --safety_profile performance_soft_output_v2_light_vmc_balance_v3 \
   --output logs/reference_debug/fast_diagonal_trot_balanced_mid_soft_performance_soft_output_v2_light_vmc_balance_v3.csv
+```
+
+Performance-soft-output v2 balance-v4, preserving v3 while softening RR/RL
+late-swing and early touchdown:
+
+```bash
+./isaaclab.sh -p scripts/environments/fanfan_reference_debug.py \
+  --task Isaac-Velocity-Flat-FanfanRlCpgResidual-FastDiagonalTrot-SafeReference-v0 \
+  --num_envs 1 --duration 20 \
+  --trot_preset balanced \
+  --support_kp_level mid_soft \
+  --safety_profile performance_soft_output_v2_light_vmc_balance_v4 \
+  --output logs/reference_debug/fast_diagonal_trot_balanced_mid_soft_performance_soft_output_v2_light_vmc_balance_v4.csv
 ```
 
 Baseline comparison for the soft-output run:
