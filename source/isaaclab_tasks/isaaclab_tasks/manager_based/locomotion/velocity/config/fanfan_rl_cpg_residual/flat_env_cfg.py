@@ -18,7 +18,7 @@ from . import mdp_observations as wave_obs
 from . import mdp_rewards as wave_rew
 from .curriculum import WAVE_CURRICULUM_STAGES, stage_gated_push, wave_curriculum
 from .joint_semantics import SIM_JOINT_NAMES
-from .reference_gait import FanfanSmallHighFreqReferenceGaitCfg
+from .reference_gait import FanfanReferenceGaitCfg, FanfanSmallHighFreqReferenceGaitCfg
 from .residual_action import WaveResidualJointPositionActionCfg
 from .urdf_model import make_heavy_fanfan_cfg
 
@@ -103,11 +103,17 @@ class FanfanRlCpgResidualFlatEnvCfg(FanfanA1CleanFlatEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         self.scene.robot = HEAVY_FANFAN_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+        _set_rear_stand_pose(
+            self.scene.robot,
+            SMALL_HIGH_FREQ_REAR_THIGH,
+            SMALL_HIGH_FREQ_REAR_CALF,
+        )
 
         self.actions.joint_pos = WaveResidualJointPositionActionCfg(
             asset_name="robot",
             joint_names=JOINT_NAMES,
             preserve_order=True,
+            reference_cfg=FanfanReferenceGaitCfg(use_urdf_hip_outward_signs=True),
             use_default_offset=False,
             scale=1.0,
             clip={

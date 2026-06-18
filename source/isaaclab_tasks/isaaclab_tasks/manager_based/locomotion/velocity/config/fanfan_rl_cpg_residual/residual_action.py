@@ -2045,6 +2045,13 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
                 ),
                 "predicted_foot_height": self.reference.last_predicted_foot_lift,
                 "actual_foot_height": self._asset.data.body_pos_w[:, self._foot_body_ids, 2],
+                "foot_sphere_bottom_z": self._asset.data.body_pos_w[:, self._foot_body_ids, 2]
+                - float(self.cfg.diagnostic_foot_sphere_radius_m),
+                "foot_sphere_radius_m": torch.full(
+                    (self.num_envs,),
+                    float(self.cfg.diagnostic_foot_sphere_radius_m),
+                    device=self.device,
+                ),
                 "actual_foot_height_body": (
                     foot_from_trunk_b[:, :, 2]
                 ),
@@ -2086,6 +2093,7 @@ class WaveResidualJointPositionAction(DeployFilteredJointPositionAction):
                         "performance_soft_output_v2_light_vmc",
                         "performance_soft_output_v2_light_vmc_balance",
                         "performance_soft_output_v2_light_vmc_balance_v2",
+                        "performance_soft_output_v2_light_vmc_balance_v3",
                     ),
                     device=self.device,
                     dtype=torch.bool,
@@ -2330,6 +2338,7 @@ class WaveResidualJointPositionActionCfg(DeployFilteredJointPositionActionCfg):
     rear_touchdown_calf_kp_limit: float = 135.0
     rear_touchdown_kd: float = 6.2
     sim_hard_torque_budget: float = 17.0
+    diagnostic_foot_sphere_radius_m: float = 0.018
     joint_limit_warning_margin_rad: float = 0.02
     joint_limit_warning_interval_sec: float = 1.0
     csv_playback_path: str = "logs/reference_debug/fanfan_gait_playback.csv"

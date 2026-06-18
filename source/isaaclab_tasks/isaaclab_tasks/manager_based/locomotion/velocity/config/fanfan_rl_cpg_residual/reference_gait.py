@@ -38,6 +38,7 @@ class FanfanReferenceGaitCfg:
     small_high_frequency_mode: bool = False
     reference_rate_limit_rad_s: float = 0.0
     apply_default_pose_offsets: bool = True
+    use_urdf_hip_outward_signs: bool = False
     hip_outward_signs: tuple[float, float, float, float] = LEGACY_REFERENCE_HIP_OUTWARD_SIGNS
 
     thigh_length: float = 0.1560608
@@ -91,6 +92,7 @@ class FanfanSmallHighFreqReferenceGaitCfg(FanfanReferenceGaitCfg):
     small_high_frequency_mode: bool = True
     reference_rate_limit_rad_s: float = 0.0
     apply_default_pose_offsets: bool = False
+    use_urdf_hip_outward_signs: bool = True
     hip_outward_signs: tuple[float, float, float, float] = URDF_HIP_OUTWARD_SIGNS
 
     front_stride_gain: float = 1.00
@@ -155,6 +157,11 @@ class FanfanReferenceGait:
         self.num_envs = int(num_envs)
         self.device = torch.device(device)
         self.dt = float(dt)
+        self.hip_outward_signs = (
+            URDF_HIP_OUTWARD_SIGNS
+            if bool(self.cfg.use_urdf_hip_outward_signs)
+            else tuple(float(value) for value in self.cfg.hip_outward_signs)
+        )
         self.default_joint_pos = default_joint_pos.to(self.device).clone()
         if self.default_joint_pos.ndim == 1:
             self.default_joint_pos = self.default_joint_pos.unsqueeze(0).repeat(self.num_envs, 1)
@@ -195,9 +202,12 @@ class FanfanReferenceGait:
         value = torch.clamp(value, 0.0, 1.0)
         return value**3 * (value * (value * 6.0 - 15.0) + 10.0)
 
+    def _hip_outward_sign_tensor(self, dtype: torch.dtype) -> torch.Tensor:
+        return torch.tensor(self.hip_outward_signs, device=self.device, dtype=dtype)
+
     def _apply_default_pose_offsets(self, q: torch.Tensor) -> torch.Tensor:
         q = q.clone()
-        normal_sign = torch.tensor((-1.0, 1.0, -1.0, 1.0), device=q.device, dtype=q.dtype)
+        normal_sign = self._hip_outward_sign_tensor(q.dtype).to(q.device)
         hip_ids = torch.tensor((0, 3, 6, 9), device=q.device)
         q[:, hip_ids] *= float(self.cfg.hip_default_scale)
         q[:, hip_ids] -= normal_sign * float(self.cfg.hip_default_inward_offset)
@@ -375,9 +385,7 @@ class FanfanReferenceGait:
         x_des = torch.where(swing_mask, x_swing, x_stance)
         z_des = torch.where(swing_mask, z_swing, z_stance)
 
-        hip_outward_signs = torch.tensor(self.cfg.hip_outward_signs, device=q.device, dtype=q.dtype)
-        # Keep the real-machine gait semantics here. Any URDF sign difference
-        # belongs in FanfanJointSemanticAdapter, not in the gait equations.
+        hip_outward_signs = self._hip_outward_sign_tensor(q.dtype).to(q.device)
         hip_delta = -0.004 * swing_shape * hip_outward_signs
         calf_push = -calf_extra.unsqueeze(0) * swing_shape
         calf_push += 0.006 * stance_shape * torch.any(swing_mask, dim=1, keepdim=True)
@@ -611,7 +619,7 @@ class FanfanReferenceGait:
         # support leg.
         calf_target += 0.006 * torch.clamp(support_joint_preload, max=2.0)
         q_target = self.default_joint_pos.clone()
-        hip_signs = torch.tensor(self.cfg.hip_outward_signs, device=self.device, dtype=q_target.dtype)
+        hip_signs = self._hip_outward_sign_tensor(q_target.dtype)
         q_target[:, 0::3] += -0.003 * swing_shape * hip_signs.unsqueeze(0)
         q_target[:, 1::3] = thigh_target
         q_target[:, 2::3] = calf_target
@@ -681,4 +689,13 @@ class FanfanReferenceGait:
             "policy_q_ref": self.last_q_ref,
             "predicted_foot_z": self.last_predicted_foot_z,
             "predicted_foot_lift": self.last_predicted_foot_lift,
+            "hip_outward_signs": self._hip_outward_sign_tensor(self.last_q_ref.dtype)
+            .unsqueeze(0)
+            .repeat(self.num_envs, 1),
+            "use_urdf_hip_outward_signs": torch.full(
+                (self.num_envs,),
+                bool(self.cfg.use_urdf_hip_outward_signs),
+                device=self.device,
+                dtype=torch.bool,
+            ),
         }

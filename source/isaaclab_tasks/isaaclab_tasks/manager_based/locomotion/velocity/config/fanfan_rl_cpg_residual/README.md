@@ -20,6 +20,42 @@ the `0.15606 / 0.14894 m` leg lengths. A mismatch stops the task immediately.
 The small gait uses the unmodified real-machine stand pose as its reference
 zero; it does not inherit the legacy gait's hidden hip or rear-leg offsets.
 
+### Simulation reset consistency
+
+Residual RL training and reference-only checks use a level rear stand pose in
+simulation:
+
+```text
+base_z          = 0.300 m
+rear thigh/calf = 0.3491 / -0.7854 rad
+```
+
+This is a simulation reset fix only. It keeps the four foot centers close to
+the same initial FK height and avoids reset-time ground penetration/rebound
+from the old straight rear legs. It does not modify the real deployment stand
+pose files.
+
+### Hip sign convention
+
+The code keeps both hip sign conventions:
+
+```text
+legacy signs = (+1, +1, -1, +1)
+URDF signs   = (-1, +1, -1, +1)  # FR, FL, RR, RL
+```
+
+Legacy signs are retained only for old wave-gait experiment reproduction.
+FastDiagonalTrot, VMC, SmallHighFreq, and residual RL training use URDF signs
+through `use_urdf_hip_outward_signs=True`. Joint order and
+`SIM_JOINT_SIGN_POLICY_ORDER` are unchanged.
+
+### Velocity-limit contract
+
+The URDF `velocity=44 rad/s` value is treated as a URDF/protocol-level limit.
+Deployment-like filters, actuator assumptions, target-rate shaping, and RL
+reward design should use the RS01 control limit of `33 rad/s`; do not tune the
+policy or filters as if `44 rad/s` were the normal executable speed budget.
+
 Default small-high-frequency parameters:
 
 ```text

@@ -843,6 +843,7 @@ def main():
         "mode",
         "stage",
         "base_phase",
+        "hip_sign_mode",
         "active_swing_leg",
         "active_swing_pair",
         "support_pair",
@@ -859,6 +860,8 @@ def main():
         "decimation",
         "phase_increment_per_step",
         "phase_cycle_time",
+        "use_urdf_hip_outward_signs",
+        "foot_sphere_radius_m",
         "delay_steps",
         "joint_limit_clip_ratio",
         "rate_limit_clip_ratio",
@@ -1033,6 +1036,7 @@ def main():
         "base_ang_vel",
         "predicted_foot_height",
         "foot_world_z",
+        "foot_sphere_bottom_z",
         "foot_body_z",
         "foot_contact_state",
         "foot_normal_force",
@@ -1062,6 +1066,7 @@ def main():
                     "rear_touchdown_kp_scale",
                     "predicted_foot_height",
                     "foot_world_z",
+                    "foot_sphere_bottom_z",
                     "foot_body_z",
                     "foot_contact_state",
                     "foot_normal_force",
@@ -1070,6 +1075,7 @@ def main():
                 else (3 if prefix == "base_ang_vel" else 12),
             )
         )
+    header.extend([f"hip_outward_sign_{leg_name}" for leg_name in LEG_NAMES])
 
     print(
         f"[REFERENCE_DEBUG] mode={mode} output={output_path} "
@@ -1182,6 +1188,7 @@ def main():
         "tau_joint": [0.0] * len(JOINT_NAMES),
     }
     csv_schema_checked = False
+    initial_pose_reported = False
     with output_path.open("w", newline="", encoding="utf-8") as csv_file:
         writer = csv.writer(csv_file)
         writer.writerow(header)
@@ -1222,6 +1229,19 @@ def main():
                 predicted_lift_max = torch.maximum(predicted_lift_max, predicted)
                 actual_height_min = torch.minimum(actual_height_min, actual)
                 actual_height_max = torch.maximum(actual_height_max, actual)
+                hip_sign_mode = "URDF" if bool(_scalar(debug["use_urdf_hip_outward_signs"])) else "LEGACY"
+                if not initial_pose_reported:
+                    foot_world_z = _row_vector(debug["actual_foot_height"])
+                    foot_bottom_z = _row_vector(debug["foot_sphere_bottom_z"])
+                    print(
+                        "[INITIAL_FOOT_Z] "
+                        f"hip_sign_mode={hip_sign_mode} "
+                        f"hip_outward_signs={_row_vector(debug['hip_outward_signs'])} "
+                        f"foot_center_world_z={foot_world_z} "
+                        f"foot_sphere_bottom_z={foot_bottom_z} "
+                        f"diagnostic_sphere_radius={_scalar(debug['foot_sphere_radius_m']):.4f}m"
+                    )
+                    initial_pose_reported = True
                 if mode == "rear_lift_test" and int(_scalar(debug["rear_lift_phase"])) == 5:
                     rear_leg = str(action_term.cfg.rear_lift_test_leg).upper()
                     rear_index = 2 if rear_leg == "RR" else 3
@@ -1434,6 +1454,7 @@ def main():
                     mode,
                     int(_scalar(debug["control_stage"])),
                     _scalar(action_term.reference.base_phase),
+                    hip_sign_mode,
                     active_name,
                     active_pair_name,
                     support_pair_name,
@@ -1450,6 +1471,8 @@ def main():
                     _scalar(debug["decimation"]),
                     _scalar(debug["phase_increment_per_step"]),
                     _scalar(debug["phase_cycle_time"]),
+                    int(bool(_scalar(debug["use_urdf_hip_outward_signs"]))),
+                    _scalar(debug["foot_sphere_radius_m"]),
                     int(_scalar(debug["delay_steps"])),
                     _scalar(debug["joint_limit_clipping_ratio"]),
                     _scalar(debug["rate_limit_clipping_ratio"]),
@@ -1623,10 +1646,12 @@ def main():
                 row += _row_vector(robot.data.root_ang_vel_b)
                 row += _row_vector(debug["predicted_foot_height"])
                 row += _row_vector(debug["actual_foot_height"])
+                row += _row_vector(debug["foot_sphere_bottom_z"])
                 row += _row_vector(debug["actual_foot_height_body"])
                 row += _row_vector(debug["foot_contact_state"].to(torch.float32))
                 row += _row_vector(debug["foot_normal_force"])
                 row += _row_vector(debug["support_preload_delta_z"])
+                row += _row_vector(debug["hip_outward_signs"])
                 if len(row) != len(header):
                     raise RuntimeError(
                         f"CSV schema mismatch: header has {len(header)} columns, "
@@ -1726,6 +1751,11 @@ def main():
             f"predicted_lift_max={predicted_lift_max.tolist()} "
             f"actual_lift={actual_lift.tolist()} "
             f"actual/predicted={lift_ratio.tolist()}"
+        )
+        print(
+            "[REFERENCE_HIP_SIGNS] "
+            f"mode={'URDF' if bool(_scalar(debug['use_urdf_hip_outward_signs'])) else 'LEGACY'} "
+            f"FR/FL/RR/RL={_row_vector(debug['hip_outward_signs'])}"
         )
         if mode == "fast_diagonal_trot":
             tau = fast_trot_stats["tau_cmd_max"]
